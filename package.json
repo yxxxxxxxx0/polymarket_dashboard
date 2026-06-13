@@ -1,0 +1,23 @@
+{
+  "name": "polymarket-dashboard",
+  "private": true,
+  "workspaces": [
+    "apps/server",
+    "apps/web"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev -w @polymarket-dashboard/server\" \"npm run dev -w @polymarket-dashboard/web\"",
+    "build": "npm run build -w @polymarket-dashboard/server && npm run build -w @polymarket-dashboard/web",
+    "test": "tsx tests/dashboard.test.ts",
+    "start": "npm run start:web",
+    "start:web": "npm run start -w @polymarket-dashboard/web",
+    "start:server": "npm run start -w @polymarket-dashboard/server",
+    "start:all": "concurrently \"npm run start:server\" \"npm run start:web\"",
+    "prisma:generate": "npm run prisma:generate -w @polymarket-dashboard/server",
+    "prisma:migrate": "npm run prisma:migrate -w @polymarket-dashboard/server"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "typescript": "^5.8.3"
+  }
+}

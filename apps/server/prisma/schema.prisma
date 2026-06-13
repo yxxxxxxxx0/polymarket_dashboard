@@ -1,0 +1,187 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum TradeMode {
+  PAPER
+  LIVE
+}
+
+enum OrderSide {
+  BUY
+  SELL
+}
+
+enum StopLossTriggerType {
+  LAST_TRADE_PRICE
+  MIDPOINT_PRICE
+  BEST_BID
+  BEST_ASK
+}
+
+enum StopLossExecutionType {
+  MARKETABLE_LIMIT
+  STRICT_LIMIT
+  CANCEL_ONLY
+}
+
+enum RuleType {
+  STOP_LOSS
+  TRAILING_STOP
+  BUY_STOP
+  BREAKOUT_BUY
+}
+
+enum StopLossStatus {
+  ENABLED
+  DISABLED
+  ARMED
+  TRIGGERING
+  TRIGGERED
+  SUBMITTED
+  FILLED
+  FAILED
+}
+
+model Position {
+  id          String   @id @default(cuid())
+  marketId    String
+  conditionId String?
+  tokenId     String
+  outcomeName String
+  side        OrderSide
+  size        Float
+  entryPrice  Float
+  currentPrice Float?
+  tradeMode   TradeMode @default(PAPER)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  stopLossRules StopLossRule[]
+
+  @@index([marketId])
+  @@index([tokenId])
+}
+
+model OpenOrder {
+  id          String    @id @default(cuid())
+  exchangeOrderId String?
+  marketId    String
+  conditionId String?
+  tokenId     String
+  outcomeName String?
+  side        OrderSide
+  price       Float
+  size        Float
+  remainingSize Float
+  tradeMode   TradeMode @default(PAPER)
+  status      String    @default("OPEN")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([marketId])
+  @@index([tokenId])
+}
+
+model StopLossRule {
+  id            String                @id @default(cuid())
+  ruleType      RuleType              @default(STOP_LOSS)
+  marketId      String
+  conditionId   String?
+  tokenId       String
+  outcomeName   String
+  currentPrice  Float?
+  lastEvaluatedPrice Float?
+  lastUpdatedAt DateTime?
+  stopPercentage Float?
+  sideCurrentlyHeld OrderSide
+  positionSize  Float
+  entryPrice    Float
+  stopPrice     Float
+  hardStopPrice Float?
+  softStopPrice Float?
+  useOfiConfirmationForSoftStop Boolean @default(true)
+  useOfiConfirmationForHardStop Boolean @default(false)
+  highestPriceSinceEntry Float?
+  trailingPercentage Float?
+  referencePrice Float?
+  breakoutPercentage Float?
+  breakoutPrice Float?
+  breakoutReferenceSource StopLossTriggerType?
+  breakoutSizeUsd Float?
+  useOfiConfirmation Boolean @default(false)
+  ofiBuyThreshold Float?
+  usePriceSlopeConfirmation Boolean @default(false)
+  priceSlopeThreshold Float?
+  maxSpread Float?
+  breakevenEnabled Boolean @default(false)
+  breakevenTriggerPrice Float?
+  breakevenBuffer Float @default(0)
+  takeProfitPrice Float?
+  triggeredPrice Float?
+  orderSubmitted Boolean @default(false)
+  orderId       String?
+  triggerType   StopLossTriggerType
+  executionType StopLossExecutionType
+  slippageLimit Float
+  maxSellSize   Float
+  enabled       Boolean               @default(true)
+  triggeredAt   DateTime?
+  status        StopLossStatus        @default(ENABLED)
+  positionId    String?
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+
+  position Position? @relation(fields: [positionId], references: [id])
+  triggerLogs StopLossTriggerLog[]
+
+  @@index([tokenId])
+  @@index([status])
+}
+
+model StopLossTriggerLog {
+  id          String   @id @default(cuid())
+  ruleId      String
+  attemptedAt DateTime @default(now())
+  referencePrice Float?
+  executablePrice Float?
+  size        Float?
+  tradeMode   TradeMode @default(PAPER)
+  success     Boolean
+  message     String
+  rawResponse String?
+
+  rule StopLossRule @relation(fields: [ruleId], references: [id])
+
+  @@index([ruleId])
+}
+
+model TradeLog {
+  id          String   @id @default(cuid())
+  marketId    String
+  conditionId String?
+  tokenId     String
+  side        OrderSide
+  price       Float
+  size        Float
+  tradeMode   TradeMode @default(PAPER)
+  source      String
+  exchangeOrderId String?
+  rawResponse String?
+  createdAt   DateTime @default(now())
+
+  @@index([marketId])
+  @@index([tokenId])
+}
+
+model AppSetting {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  value       String
+  updatedAt   DateTime @updatedAt
+}

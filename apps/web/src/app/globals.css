@@ -1,0 +1,43 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #eef3f7;
+  color: #101820;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+.control {
+  @apply h-9 rounded-md border border-line bg-white px-3 text-sm outline-none focus:border-ink;
+}
+
+.icon-button {
+  @apply inline-flex h-9 w-9 items-center justify-center rounded-md border border-line bg-white text-ink hover:bg-panel;
+}
+
+.primary-button {
+  @apply inline-flex h-9 items-center justify-center gap-2 rounded-md bg-ink px-3 text-sm font-medium text-white hover:bg-black disabled:cursor-not-allowed disabled:bg-slate-400;
+}
+
+.secondary-button {
+  @apply inline-flex h-9 items-center justify-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium hover:bg-panel disabled:cursor-not-allowed disabled:text-slate-400;
+}
+
+.table-head {
+  @apply border-b border-line bg-panel text-left text-xs font-semibold uppercase tracking-normal text-slate-600;
+}
+
+.table-cell {
+  @apply border-b border-line px-3 py-2 text-sm;
+}

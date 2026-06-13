@@ -1,0 +1,17 @@
+{
+  "marketId": "2443691",
+  "conditionId": "0xbabc896225844371b57a54468c5e2638a47fc64039765fb61c68d10f23885331",
+  "title": "Atlanta Braves vs. Chicago White Sox",
+  "outcomes": [
+    {
+      "name": "Atlanta",
+      "envKey": "POLYMARKET_ATLANTA_TOKEN_ID",
+      "tokenId": "50758375613609205206722321143299691492416072642609722392299342065304974315278"
+    },
+    {
+      "name": "White Sox",
+      "envKey": "POLYMARKET_WHITE_SOX_TOKEN_ID",
+      "tokenId": "5896699598633116714020056796075028215404827881700347064018525836602350974551"
+    }
+  ]
+}
