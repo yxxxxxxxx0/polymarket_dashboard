@@ -1,5 +1,6 @@
+import { config } from "../config.js";
+
 const cache = new Map<string, { expiresAt: number; value: { volume: number; liquidity: number; raw: unknown } | null }>();
-const cacheMs = 30_000;
 
 function numeric(value: unknown) {
   const parsed = Number(value);
@@ -30,10 +31,10 @@ export async function fetchMarketMetadata(marketId: string) {
   try {
     const raw = await fetchGamma(`/events/${encodeURIComponent(marketId)}`).catch(() => fetchGamma(`/markets/${encodeURIComponent(marketId)}`));
     const value = metadataFromRaw(raw);
-    cache.set(marketId, { expiresAt: Date.now() + cacheMs, value });
+    cache.set(marketId, { expiresAt: Date.now() + config.MARKET_STATS_REFRESH_MS, value });
     return value;
   } catch {
-    cache.set(marketId, { expiresAt: Date.now() + cacheMs, value: null });
+    cache.set(marketId, { expiresAt: Date.now() + config.MARKET_STATS_REFRESH_MS, value: null });
     return null;
   }
 }

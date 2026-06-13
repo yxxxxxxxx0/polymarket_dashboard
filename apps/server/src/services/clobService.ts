@@ -10,7 +10,7 @@ import { createWalletClient, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { balanceSignatureType, config, orderSignatureType } from "../config.js";
 import { HttpError } from "../lib/http.js";
-import { getCachedOrderBook, subscribeTokens, updateCachedOrderBook } from "./orderbookCache.js";
+import { getCachedOrderBook, hasFreshOrderBook, subscribeTokens, updateCachedOrderBook } from "./orderbookCache.js";
 import { assertConfiguredMarket, assertConfiguredToken } from "./singleMarketService.js";
 import type { OrderBook } from "../types/domain.js";
 
@@ -105,6 +105,9 @@ async function withSecondPrecisionTimestamp<T>(fn: () => Promise<T>) {
 export async function fetchOrderBook(tokenId: string): Promise<OrderBook> {
   assertConfiguredToken(tokenId);
   subscribeTokens([tokenId]);
+  if (hasFreshOrderBook(tokenId, config.ORDERBOOK_REFRESH_MS)) {
+    return getCachedOrderBook(tokenId);
+  }
   try {
     const response = await fetch(`${config.POLYMARKET_CLOB_HOST}/book?token_id=${encodeURIComponent(tokenId)}`, {
       headers: { accept: "application/json" },

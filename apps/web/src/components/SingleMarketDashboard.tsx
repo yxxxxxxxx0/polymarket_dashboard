@@ -2,7 +2,7 @@
 
 import { CheckCircle2, ChevronsUpDown, Plus, RefreshCw, ShieldPlus, Trash2, TrendingUp, Zap } from "lucide-react";
 import { useEffect, useState } from "react";
-import { api, post, withProfile, type ActiveMarketConfig, type MarketSummary, type SavedMarketConfig } from "@/lib/api";
+import { api, post, streamUrl, withProfile, type ActiveMarketConfig, type MarketStats, type MarketSummary, type SavedMarketConfig } from "@/lib/api";
 import { MarketPriceChart } from "./MarketPriceChart";
 import { OrderBookPanel } from "./OrderBookPanel";
 import { OrderBookProvider } from "./OrderBookProvider";
@@ -44,6 +44,19 @@ export function SingleMarketDashboard({ profile = "football", marketLabel = "Mar
   useEffect(() => {
     void loadMarket();
   }, [profile]);
+
+  useEffect(() => {
+    if (!market) return;
+    const source = new EventSource(streamUrl("/api/stream/market-stats", profile));
+    source.onmessage = (event) => {
+      const stats = JSON.parse(event.data) as MarketStats;
+      if (stats.marketId !== market.id) return;
+      setMarket((current) => current && current.id === stats.marketId
+        ? { ...current, volume: stats.volume, liquidity: stats.liquidity }
+        : current);
+    };
+    return () => source.close();
+  }, [market?.id, profile]);
 
   async function loadSavedMarkets() {
     setSavedMarketsLoading(true);
@@ -264,7 +277,7 @@ export function SingleMarketDashboard({ profile = "football", marketLabel = "Mar
                 ))}
               </div>
             </div>
-            <MarketPriceChart tokenIds={market.tokenIds} outcomeNames={market.outcomes} marketVolume={market.volume} />
+            <MarketPriceChart tokenIds={market.tokenIds} outcomeNames={market.outcomes} marketVolume={market.volume} marketLiquidity={market.liquidity} />
             <PositionSummary tokenId={tokenId} />
           </section>
 

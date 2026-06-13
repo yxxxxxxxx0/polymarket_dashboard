@@ -1,6 +1,12 @@
 export const API_BASE = "";
 export const STREAM_BASE = process.env.NEXT_PUBLIC_STREAM_BASE ?? "http://localhost:4000";
-const API_TIMEOUT_MS = 10_000;
+function positiveEnvNumber(value: string | undefined, fallback: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const API_TIMEOUT_MS = positiveEnvNumber(process.env.NEXT_PUBLIC_API_TIMEOUT_MS, 10_000);
+export const UI_REFRESH_MS = positiveEnvNumber(process.env.NEXT_PUBLIC_UI_REFRESH_MS, 10_000);
 export const DEFAULT_MARKET_PROFILE = "football";
 
 export function profileFromPath(pathname: string | null | undefined) {
@@ -30,6 +36,13 @@ export type MarketSummary = {
   tokenIds: string[];
   volume?: number;
   liquidity?: number;
+};
+
+export type MarketStats = {
+  marketId: string;
+  volume: number;
+  liquidity: number;
+  updatedAt: string;
 };
 
 export type ActiveMarketConfig = {

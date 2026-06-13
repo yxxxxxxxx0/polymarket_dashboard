@@ -1,6 +1,7 @@
 import { Router } from "express";
 import type { Request } from "express";
 import { asyncHandler, requireString } from "../lib/http.js";
+import { config } from "../config.js";
 import { enterMarketProfile } from "../services/activeMarketService.js";
 import { getChart, type ChartInterval, type ChartSource } from "../services/chartService.js";
 import { fetchOrderBook } from "../services/clobService.js";
@@ -62,4 +63,33 @@ streamRouter.get("/orderbook", (req, res) => {
   });
 
   req.on("close", dispose);
+});
+
+streamRouter.get("/market-stats", (req, res) => {
+  selectRequestProfile(req);
+  const market = configuredMarket();
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive"
+  });
+
+  const send = async () => {
+    const metadata = await fetchMarketMetadata(market.id);
+    res.write(`data: ${JSON.stringify({
+      marketId: market.id,
+      volume: metadata?.volume ?? market.volume,
+      liquidity: metadata?.liquidity ?? market.liquidity,
+      updatedAt: new Date().toISOString()
+    })}\n\n`);
+  };
+
+  void send();
+  const interval = setInterval(() => {
+    void send().catch((error) => {
+      console.error("Market stats stream error", error);
+    });
+  }, config.MARKET_STATS_REFRESH_MS);
+
+  req.on("close", () => clearInterval(interval));
 });

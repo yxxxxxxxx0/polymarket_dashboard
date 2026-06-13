@@ -152,7 +152,10 @@ stopLossRouter.post("/:id/enable", asyncHandler(async (req, res) => {
     data: {
       enabled: true,
       status: existing.ruleType === RuleType.BREAKOUT_BUY || existing.ruleType === RuleType.BUY_STOP ? StopLossStatus.ARMED : StopLossStatus.ENABLED,
-      triggeredAt: null
+      triggeredAt: null,
+      triggeredPrice: null,
+      orderSubmitted: false,
+      orderId: null
     }
   });
   invalidateStopLossRuleCache(marketId);

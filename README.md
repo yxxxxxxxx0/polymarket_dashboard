@@ -15,6 +15,7 @@ Full-stack dashboard for one active Polymarket market. It shows the active marke
 ## Setup
 
 ```bash
+mkdir -p ~/polymarket_data
 cp .env.example .env
 npm install
 npm run prisma:generate
@@ -28,7 +29,9 @@ Backend: `http://localhost:4000`
 
 ## Active Market
 
-The active market lives in `config/active-market.json`. To change it without editing `.env` or restarting the frontend, open the dashboard, click `Change Market`, paste `.env`-style market text, and submit.
+The active market lives in a local runtime file such as `config/active-market.json`. To change it without editing `.env` or restarting the frontend, open the dashboard, click `Change Market`, paste `.env`-style market text, and submit.
+
+Do not commit active-market JSON files from production servers. They are ignored because a Git pull should not overwrite the market currently being traded on AWS.
 
 The backend routes are:
 
@@ -36,6 +39,28 @@ The backend routes are:
 - `POST /api/active-market/from-env`
 
 The real `.env` should keep stable app settings and secrets only, such as CLOB hosts, wallet credentials, ports, and API settings.
+
+## Local Data Safety
+
+Keep trading data outside the code checkout. The default local SQLite URL is:
+
+```bash
+DATABASE_URL=file:/Users/justincheng/polymarket_data/dev.db
+```
+
+The repo ignores `.env`, active-market JSON files, SQLite databases, JSONL files, logs, build output, and `polymarket_data/` so Git operations do not overwrite local trading history or production market selection.
+
+## Runtime Speed Knobs
+
+The server uses Polymarket market WebSocket updates as the primary order book source and streams cached books to the browser over server-sent events. Polling is only a fallback and is configurable:
+
+```bash
+ORDERBOOK_REFRESH_MS=1000
+RULE_EVALUATION_MS=1000
+ORDERBOOK_STALE_MS=2000
+MARKET_STATS_REFRESH_MS=5000
+NEXT_PUBLIC_UI_REFRESH_MS=10000
+```
 
 ## Notes
 

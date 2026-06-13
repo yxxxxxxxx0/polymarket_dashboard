@@ -3,7 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { usePathname } from "next/navigation";
-import { api, profileFromPath, withProfile, type AccountSummaryResponse } from "@/lib/api";
+import { api, profileFromPath, UI_REFRESH_MS, withProfile, type AccountSummaryResponse } from "@/lib/api";
 
 type AccountContextValue = {
   account: AccountSummaryResponse | null;
@@ -52,7 +52,7 @@ export function AccountProvider({ children }: { children: ReactNode }) {
     setAccount(null);
     setLoading(true);
     refreshAccount({ force: true });
-    const poll = window.setInterval(refreshAccount, 15_000);
+    const poll = window.setInterval(refreshAccount, UI_REFRESH_MS);
     return () => {
       mounted.current = false;
       window.clearInterval(poll);

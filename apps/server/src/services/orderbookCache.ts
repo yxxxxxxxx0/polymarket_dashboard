@@ -253,6 +253,18 @@ export function getCachedOrderBook(tokenId: string): OrderBook {
   return books.get(tokenId) ?? emptyBook(tokenId);
 }
 
+export function orderBookAgeMs(book: OrderBook): number | null {
+  if (!book.lastUpdateTime) return null;
+  const timestamp = Date.parse(book.lastUpdateTime);
+  if (!Number.isFinite(timestamp)) return null;
+  return Math.max(0, Date.now() - timestamp);
+}
+
+export function hasFreshOrderBook(tokenId: string, maxAgeMs = config.ORDERBOOK_STALE_MS): boolean {
+  const age = orderBookAgeMs(getCachedOrderBook(tokenId));
+  return age !== null && age <= maxAgeMs;
+}
+
 export function getCachedOfi(tokenId: string) {
   assertConfiguredToken(tokenId);
   return getCachedOrderBook(tokenId).ofi ?? emptyBook(tokenId).ofi;

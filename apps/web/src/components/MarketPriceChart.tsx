@@ -72,7 +72,7 @@ function xLabel(timestamp: number | null) {
   }).format(new Date(timestamp));
 }
 
-export function MarketPriceChart({ tokenIds, outcomeNames, marketVolume }: { tokenIds: string[]; outcomeNames: string[]; marketVolume?: number | null }) {
+export function MarketPriceChart({ tokenIds, outcomeNames, marketVolume, marketLiquidity }: { tokenIds: string[]; outcomeNames: string[]; marketVolume?: number | null; marketLiquidity?: number | null }) {
   const [seriesPoints, setSeriesPoints] = useState<Record<string, ChartPoint[]>>({});
   const [ofiSeriesPoints, setOfiSeriesPoints] = useState<Record<string, ChartPoint[]>>({});
   const [clock, setClock] = useState(() => Date.now());
@@ -241,7 +241,7 @@ export function MarketPriceChart({ tokenIds, outcomeNames, marketVolume }: { tok
           <text x={PLOT_LEFT + 310} y={PLOT_BOTTOM + 34} fill="#334155" fontSize="15" fontFamily="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">{xLabel(midTimestamp)}</text>
           <text x={PLOT_LEFT + 615} y={PLOT_BOTTOM + 34} fill="#334155" fontSize="15" fontFamily="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">{xLabel(clock)}</text>
           <text x={PLOT_LEFT} y={HEIGHT - 12} fill="#94a3b8" fontSize="12" fontWeight="800" fontFamily="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">
-            Market volume: {fmtCurrencyCompact(marketVolume)}
+            Volume: {fmtCurrencyCompact(marketVolume)}  Liquidity: {fmtCurrencyCompact(marketLiquidity)}
           </text>
           {totalSnapshots === 0 && (
             <text x={WIDTH / 2} y={HEIGHT / 2} textAnchor="middle" fill="#94a3b8" fontSize="14" fontFamily="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">Waiting for order book data</text>

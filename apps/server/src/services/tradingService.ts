@@ -5,6 +5,7 @@ import { assertConfiguredMarket, assertConfiguredToken, configuredTokenIds, mark
 import { assertTradingAllowed } from "./tradingPolicy.js";
 import { getAppSettings } from "./settingsService.js";
 import { invalidateAccountSummaryCache } from "./accountService.js";
+import { HttpError } from "../lib/http.js";
 
 export type OrderInput = {
   marketId: string;
@@ -16,12 +17,30 @@ export type OrderInput = {
   size: number;
   tradeMode?: TradeMode;
   closeOnly?: boolean;
+  source?: string;
 };
 
-export async function placeOrder(input: OrderInput) {
+const orderLocks = new Set<string>();
+
+function orderLockKey(input: OrderInput, tradeMode: TradeMode) {
+  return [tradeMode, input.marketId, input.tokenId, input.side, input.closeOnly ? "close" : "open"].join(":");
+}
+
+async function withOrderLock<T>(key: string, fn: () => Promise<T>) {
+  if (orderLocks.has(key)) {
+    throw new HttpError(409, "An order for this market/token/side is already being submitted");
+  }
+  orderLocks.add(key);
+  try {
+    return await fn();
+  } finally {
+    orderLocks.delete(key);
+  }
+}
+
+async function placeOrderUnlocked(input: OrderInput, tradeMode: TradeMode) {
   assertConfiguredMarket(input.marketId);
   assertConfiguredToken(input.tokenId);
-  const tradeMode = input.tradeMode ?? TradeMode.PAPER;
   await assertTradingAllowed({
     tradeMode,
     action: input.closeOnly || input.side === OrderSide.SELL ? "CLOSE" : "OPEN",
@@ -65,7 +84,7 @@ export async function placeOrder(input: OrderInput) {
       price: input.price,
       size: input.size,
       tradeMode,
-      source: "manual",
+      source: input.source ?? "manual",
       exchangeOrderId,
       rawResponse: JSON.stringify(response)
     }
@@ -89,6 +108,11 @@ export async function placeOrder(input: OrderInput) {
 
   invalidateAccountSummaryCache();
   return { live: true, order: liveOrder, exchangeOrderId, response };
+}
+
+export async function placeOrder(input: OrderInput) {
+  const tradeMode = input.tradeMode ?? TradeMode.PAPER;
+  return withOrderLock(orderLockKey(input, tradeMode), () => placeOrderUnlocked(input, tradeMode));
 }
 
 export async function cancelOrder(orderId: string, tradeMode: TradeMode = TradeMode.PAPER) {
