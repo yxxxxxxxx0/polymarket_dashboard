@@ -77,7 +77,7 @@ export function computeEmergencyScore(params: {
 export function shouldEmergencyStopLoss(params: {
   entryPrice: number;
   stopPrice: number;
-  midNow: number;
+  triggerReference: number;
   emergencyScore: number;
   gameMinute: number;
 }): boolean {
@@ -86,9 +86,9 @@ export function shouldEmergencyStopLoss(params: {
   const emergencyPreStop = params.stopPrice + preStopBuffer;
 
   return (
-    params.midNow <= params.stopPrice
+    params.triggerReference <= params.stopPrice
     || (
-      params.midNow <= emergencyPreStop
+      params.triggerReference <= emergencyPreStop
       && params.emergencyScore >= emergencyParams.emergencyScoreStop
     )
   );
@@ -96,20 +96,20 @@ export function shouldEmergencyStopLoss(params: {
 
 export function shouldEmergencyBreakoutBuy(params: {
   breakoutTrigger: number;
-  midNow: number;
-  mid5sAgo: number;
+  triggerReference: number;
+  triggerReference5sAgo: number;
   emergencyScore: number;
   gameMinute: number;
 }): boolean {
   const emergencyParams = getEmergencyParams(params.gameMinute);
   const preBreakoutBuffer = params.gameMinute >= 88 ? 0.04 : params.gameMinute >= 75 ? 0.025 : 0.015;
   const emergencyPreBreakout = params.breakoutTrigger - preBreakoutBuffer;
-  const priceRising = params.midNow > params.mid5sAgo;
+  const priceRising = params.triggerReference > params.triggerReference5sAgo;
 
   return (
-    params.midNow >= params.breakoutTrigger
+    params.triggerReference >= params.breakoutTrigger
     || (
-      params.midNow >= emergencyPreBreakout
+      params.triggerReference >= emergencyPreBreakout
       && priceRising
       && params.emergencyScore >= emergencyParams.emergencyScoreBreakout
     )

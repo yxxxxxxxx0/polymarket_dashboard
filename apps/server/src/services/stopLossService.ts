@@ -30,7 +30,15 @@ import {
 const confirmationTicks = new Map<string, number>();
 const recentPrices = new Map<string, Array<{ timestamp: number; price: number }>>();
 const midpointHistory = new Map<string, Array<{ timestamp: number; midpoint: number }>>();
-const emergencyOrderbookHistory = new Map<string, Array<{ timestamp: number; mid: number; spread: number; bidDepthNear: number; askDepthNear: number }>>();
+const emergencyOrderbookHistory = new Map<string, Array<{
+  timestamp: number;
+  mid: number;
+  spread: number;
+  bestBid: number | null;
+  bestAsk: number | null;
+  bidDepthNear: number;
+  askDepthNear: number;
+}>>();
 const emergencyCooldowns = new Map<string, number>();
 const tokenEvaluationQueues = new Map<string, { running: boolean; pending: OrderBook | null }>();
 const tokenExecutionLocks = new Set<string>();
@@ -42,6 +50,23 @@ let gapModelCache: { expiresAt: number; value: GapModelConfig } | null = null;
 const EMERGENCY_HISTORY_MS = 30_000;
 const EMERGENCY_COOLDOWN_MS = 5_000;
 const EMERGENCY_SPREAD_OVERRIDE_SCORE = 0.85;
+
+export function getMarketableSellLimit(bestBid: number, slippage: number): number {
+  return Math.max(0.01, bestBid - slippage);
+}
+
+export function getMarketableBuyLimit(bestAsk: number, slippage: number): number {
+  return Math.min(0.99, bestAsk + slippage);
+}
+
+export const executionAnchorByAction = {
+  STOP_LOSS_SELL: "bestBid",
+  TAKE_PROFIT_SELL: "bestBid",
+  BREAKOUT_BUY: "bestAsk",
+  DIP_BUY: "bestAsk",
+  EMERGENCY_STOP_SELL: "bestBid",
+  EMERGENCY_BREAKOUT_BUY: "bestAsk"
+} as const;
 
 function referencePrice(book: OrderBook, triggerType: StopLossTriggerType): number | null {
   switch (triggerType) {
@@ -69,12 +94,7 @@ export function executionPrice(rule: {
     return bestBid >= rule.stopPrice ? rule.stopPrice : null;
   }
 
-  if (emergencyPnLProtection) {
-    return Math.max(bestBid - rule.slippageLimit, 0.01);
-  }
-
-  const floor = Math.max(0.01, rule.stopPrice - rule.slippageLimit);
-  return Math.max(floor, bestBid - rule.slippageLimit);
+  return getMarketableSellLimit(bestBid, rule.slippageLimit);
 }
 
 function isExitRule(ruleType: RuleType) {
@@ -148,6 +168,8 @@ function rememberEmergencyOrderbook(tokenId: string, book: OrderBook) {
     timestamp: now,
     mid,
     spread,
+    bestBid: book.bestBid,
+    bestAsk: book.bestAsk,
     bidDepthNear: computeNearDepth(book, "bid"),
     askDepthNear: computeNearDepth(book, "ask")
   };
@@ -198,6 +220,10 @@ function emergencyStressMetrics(tokenId: string, book: OrderBook, side: "bid" | 
     midNow: current.mid,
     mid5sAgo: fiveSecondsAgo.mid,
     mid10sAgo: tenSecondsAgo.mid,
+    bestBid: current.bestBid,
+    bestAsk: current.bestAsk,
+    bestBid5sAgo: fiveSecondsAgo.bestBid,
+    bestAsk5sAgo: fiveSecondsAgo.bestAsk,
     spread: current.spread,
     priceMove5s: current.mid - fiveSecondsAgo.mid,
     priceMove10s: current.mid - tenSecondsAgo.mid,
@@ -235,6 +261,8 @@ function emergencyLogPayload(rule: StopLossRule, metrics: NonNullable<ReturnType
     tokenId: rule.tokenId,
     outcomeName: rule.outcomeName,
     gameMinute,
+    bestBid: metrics.bestBid === null ? null : Number(metrics.bestBid.toFixed(4)),
+    bestAsk: metrics.bestAsk === null ? null : Number(metrics.bestAsk.toFixed(4)),
     emergencyScore: Number(metrics.emergencyScore.toFixed(4)),
     spread: Number(metrics.spread.toFixed(4)),
     priceMove5s: Number(metrics.priceMove5s.toFixed(4)),
@@ -243,6 +271,31 @@ function emergencyLogPayload(rule: StopLossRule, metrics: NonNullable<ReturnType
     normalNearDepth: Number(metrics.normalNearDepth.toFixed(4)),
     depthVacuumScore: Number(metrics.depthVacuumScore.toFixed(4)),
     ...extra
+  };
+}
+
+function executionLogPayload(params: {
+  actionType: "STOP_LOSS" | "BREAKOUT_BUY" | "TAKE_PROFIT" | "EMERGENCY_STOP" | "EMERGENCY_BREAKOUT";
+  book: OrderBook;
+  limitPrice: number | null;
+  slippage: number;
+  triggerReferenceUsed: string;
+  referencePrice: number | null;
+  executionAnchor: "bestBid" | "bestAsk";
+}) {
+  const spread = params.book.bestBid !== null && params.book.bestAsk !== null
+    ? params.book.bestAsk - params.book.bestBid
+    : params.book.spread;
+  return {
+    actionType: params.actionType,
+    bestBid: params.book.bestBid,
+    bestAsk: params.book.bestAsk,
+    spread,
+    limitPrice: params.limitPrice,
+    slippage: params.slippage,
+    triggerReferenceUsed: params.triggerReferenceUsed,
+    referencePrice: params.referencePrice,
+    executionAnchor: params.executionAnchor
   };
 }
 
@@ -470,7 +523,7 @@ export async function createStopLossRule(data: {
 
 export function marketableBuyPrice(rule: { stopPrice: number; slippageLimit: number }, book: OrderBook): number | null {
   if (book.bestAsk === null) return null;
-  return Math.min(0.99, book.bestAsk + rule.slippageLimit);
+  return getMarketableBuyLimit(book.bestAsk, rule.slippageLimit);
 }
 
 async function updateLiveRuleState(rule: Awaited<ReturnType<typeof prisma.stopLossRule.findUnique>>, book: OrderBook, ref: number | null) {
@@ -545,10 +598,12 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
       liveRule.aggressiveBreakout
       && gameMinute !== null
       && emergencyBreakoutMetrics
+      && book.bestAsk !== null
+      && emergencyBreakoutMetrics.bestAsk5sAgo !== null
       && shouldEmergencyBreakoutBuy({
         breakoutTrigger: breakoutPrice,
-        midNow: emergencyBreakoutMetrics.midNow,
-        mid5sAgo: emergencyBreakoutMetrics.mid5sAgo,
+        triggerReference: book.bestAsk,
+        triggerReference5sAgo: emergencyBreakoutMetrics.bestAsk5sAgo,
         emergencyScore: emergencyBreakoutMetrics.emergencyScore,
         gameMinute
       })
@@ -599,10 +654,12 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
         liveRule.aggressiveBreakout
         && executionGameMinute !== null
         && executionEmergencyMetrics
+        && executionBook.bestAsk !== null
+        && executionEmergencyMetrics.bestAsk5sAgo !== null
         && shouldEmergencyBreakoutBuy({
           breakoutTrigger: breakoutPrice,
-          midNow: executionEmergencyMetrics.midNow,
-          mid5sAgo: executionEmergencyMetrics.mid5sAgo,
+          triggerReference: executionBook.bestAsk,
+          triggerReference5sAgo: executionEmergencyMetrics.bestAsk5sAgo,
           emergencyScore: executionEmergencyMetrics.emergencyScore,
           gameMinute: executionGameMinute
         })
@@ -635,10 +692,24 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
       const size = price && price > 0 ? sizeUsd / price : 0;
       try {
         if (price === null || size <= 0) throw new Error("No executable buy price");
+        console.log("[RuleExecution]", executionLogPayload({
+          actionType: useEmergencyExecution ? "EMERGENCY_BREAKOUT" : "BREAKOUT_BUY",
+          book: executionBook,
+          limitPrice: price,
+          slippage: useEmergencyExecution && executionGameMinute !== null ? getEmergencyParams(executionGameMinute).slippage : executionRisk.slippageLimit,
+          triggerReferenceUsed: liveRule.breakoutReferenceSource ?? liveRule.triggerType,
+          referencePrice: executionRef,
+          executionAnchor: executionAnchorByAction.BREAKOUT_BUY
+        }));
         if (useEmergencyExecution && executionEmergencyMetrics && executionGameMinute !== null) {
           markEmergencyAttempt(claimedRule.id, "breakout");
           console.log("[EmergencyBreakout]", emergencyLogPayload(claimedRule, executionEmergencyMetrics, executionGameMinute, {
+            actionType: "EMERGENCY_BREAKOUT",
             breakoutPrice,
+            triggerReferenceUsed: "bestAsk",
+            triggerReference: executionBook.bestAsk,
+            spread: executionSpread,
+            slippage: getEmergencyParams(executionGameMinute).slippage,
             executionPrice: price,
             size,
             source: "MARKETABLE_LIMIT"
@@ -727,10 +798,11 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
     liveRule.aggressivePnLProtection
     && gameMinute !== null
     && emergencyStopMetrics
+    && book.bestBid !== null
     && shouldEmergencyStopLoss({
       entryPrice: liveRule.entryPrice,
       stopPrice: hardStopPrice,
-      midNow: emergencyStopMetrics.midNow,
+      triggerReference: book.bestBid,
       emergencyScore: emergencyStopMetrics.emergencyScore,
       gameMinute
     })
@@ -787,10 +859,11 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
       liveRule.aggressivePnLProtection
       && executionGameMinute !== null
       && executionEmergencyMetrics
+      && executionBook.bestBid !== null
       && shouldEmergencyStopLoss({
         entryPrice: liveRule.entryPrice,
         stopPrice: hardStopPrice,
-        midNow: executionEmergencyMetrics.midNow,
+        triggerReference: executionBook.bestBid,
         emergencyScore: executionEmergencyMetrics.emergencyScore,
         gameMinute: executionGameMinute
       })
@@ -832,10 +905,24 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
     try {
       if (exitSize <= 0) throw new Error("No available position size to close");
       if (!executionSpreadOk) throw new Error(`Spread ${executionSpread?.toFixed(3) ?? "unknown"} exceeds effective max spread ${executionRisk.maxSpread}`);
+      console.log("[RuleExecution]", executionLogPayload({
+        actionType: useEmergencyExecution ? "EMERGENCY_STOP" : triggerReason === "TAKE_PROFIT" ? "TAKE_PROFIT" : "STOP_LOSS",
+        book: executionBook,
+        limitPrice: price,
+        slippage: useEmergencyExecution && executionGameMinute !== null ? getEmergencyParams(executionGameMinute).slippage : executionRisk.slippageLimit,
+        triggerReferenceUsed: liveRule.triggerType,
+        referencePrice: executionRef,
+        executionAnchor: executionAnchorByAction.STOP_LOSS_SELL
+      }));
       if (useEmergencyExecution && executionEmergencyMetrics && executionGameMinute !== null) {
         markEmergencyAttempt(claimedRule.id, "stop");
         console.log("[EmergencyStop]", emergencyLogPayload(claimedRule, executionEmergencyMetrics, executionGameMinute, {
+          actionType: "EMERGENCY_STOP",
           hardStopPrice,
+          triggerReferenceUsed: "bestBid",
+          triggerReference: executionBook.bestBid,
+          spread: executionSpread,
+          slippage: getEmergencyParams(executionGameMinute).slippage,
           executionPrice: price,
           size: exitSize,
           source: "MARKETABLE_LIMIT"
