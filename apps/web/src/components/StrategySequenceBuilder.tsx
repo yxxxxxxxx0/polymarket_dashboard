@@ -112,7 +112,7 @@ export function StrategySequenceBuilder({ profile, marketId, conditionId, tokenI
     setBuySlippage(String(breakoutPreset.slippageLimit));
     setMaxSpread(String(breakoutPreset.maxSpread));
     setDisableBreakoutMaxSpread(false);
-    setTriggerType("BEST_ASK");
+    setTriggerType("BEST_BID");
     setAggressiveBreakout(true);
     setMessage(`Aggressive Breakout Buy applied: ${breakoutPreset.label}`);
   }

@@ -31,7 +31,11 @@ import {
   getMarketableBuyLimit,
   getMarketableSellLimit,
   marketableBuyPrice,
-  resolveEffectiveRiskSettings
+  normalSpreadAllowed,
+  orderBookIsStale,
+  resolveEffectiveRiskSettings,
+  shouldRetryEmergencyOrder,
+  staleLimitForMode
 } from "../apps/server/src/services/stopLossService";
 import { computeEmergencyScore, emergencyBuyLimit, emergencySellLimit, estimateEmergencyGap, getEmergencyParams, shouldEmergencyBreakoutBuy, shouldEmergencyStopLoss } from "../apps/server/src/services/emergencyExecutionModel";
 import { estimateGapByGameMinute, getAggressiveBreakoutSettings, getAggressiveStopProtectionSettings, getGameMinute } from "../apps/web/src/lib/gameTime";
@@ -309,6 +313,15 @@ assert.equal(getMarketableSellLimit(0.74, 0.08), 0.66);
 assert.equal(getMarketableBuyLimit(0.79, 0.08), 0.87);
 assert.equal(getMarketableSellLimit(0.05, 0.08), 0.01);
 assert.equal(getMarketableBuyLimit(0.96, 0.08), 0.99);
+assert.equal(normalSpreadAllowed(0.04, 0.06, false), true);
+assert.equal(normalSpreadAllowed(0.08, 0.06, false), false);
+assert.equal(normalSpreadAllowed(0.08, 0.06, true), true);
+assert.equal(orderBookIsStale(299, 300), false);
+assert.equal(orderBookIsStale(301, 300), true);
+assert.equal(orderBookIsStale(null, 300), true);
+assert.equal(staleLimitForMode("normal"), 500);
+assert.equal(staleLimitForMode("fast"), 300);
+assert.equal(staleLimitForMode("emergency"), 250);
 assert.deepEqual(executionAnchorByAction, {
   STOP_LOSS_SELL: "bestBid",
   TAKE_PROFIT_SELL: "bestBid",
@@ -335,6 +348,39 @@ assert.equal(shouldEmergencyBreakoutBuy({ breakoutTrigger: 0.58, triggerReferenc
 assert.equal(shouldEmergencyBreakoutBuy({ breakoutTrigger: 0.58, triggerReference: 0.54, triggerReference5sAgo: 0.53, emergencyScore: 0.72, gameMinute: 76 }), false);
 assert.equal(emergencySellLimit(0.44, 90), 0.14);
 assert.equal(emergencyBuyLimit(0.80, 90), 0.99);
+assert.equal(shouldRetryEmergencyOrder({
+  orderSubmitted: true,
+  orderId: "order-1",
+  status: StopLossStatus.ORDER_SUBMITTED,
+  triggeredAt: new Date(1_000),
+  latestActionType: "EMERGENCY_STOP",
+  retryCount: 0,
+  nowMs: 4_001,
+  timeoutMs: 3_000,
+  maxRetries: 2
+}), true);
+assert.equal(shouldRetryEmergencyOrder({
+  orderSubmitted: true,
+  orderId: "order-1",
+  status: StopLossStatus.ORDER_SUBMITTED,
+  triggeredAt: new Date(1_000),
+  latestActionType: "EMERGENCY_BREAKOUT",
+  retryCount: 2,
+  nowMs: 4_001,
+  timeoutMs: 3_000,
+  maxRetries: 2
+}), false);
+assert.equal(shouldRetryEmergencyOrder({
+  orderSubmitted: true,
+  orderId: "order-1",
+  status: StopLossStatus.ORDER_SUBMITTED,
+  triggeredAt: new Date(1_000),
+  latestActionType: "BREAKOUT_BUY",
+  retryCount: 0,
+  nowMs: 4_001,
+  timeoutMs: 3_000,
+  maxRetries: 2
+}), false);
 
 assert.equal(ruleStatusForDisplay(StopLossStatus.ARMED), "active");
 assert.equal(ruleStatusForDisplay(StopLossStatus.ORDER_SUBMITTED), "order_submitted");

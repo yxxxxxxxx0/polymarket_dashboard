@@ -313,7 +313,7 @@ export function StopLossForm({ profile, marketId, conditionId, tokenId, outcomeN
     setMaxSpread(String(breakoutPreset.maxSpread));
     setDisableMaxSpread(false);
     setExecutionType("MARKETABLE_LIMIT");
-    setTriggerType("BEST_ASK");
+    setTriggerType("BEST_BID");
     setAggressiveBreakout(true);
     setMessage(`Aggressive Breakout Buy applied: ${breakoutPreset.label}`);
   }

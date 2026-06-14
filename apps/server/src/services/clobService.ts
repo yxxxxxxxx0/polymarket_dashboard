@@ -102,10 +102,10 @@ async function withSecondPrecisionTimestamp<T>(fn: () => Promise<T>) {
   }
 }
 
-export async function fetchOrderBook(tokenId: string): Promise<OrderBook> {
+export async function fetchOrderBook(tokenId: string, options: { force?: boolean; maxAgeMs?: number } = {}): Promise<OrderBook> {
   assertConfiguredToken(tokenId);
   subscribeTokens([tokenId]);
-  if (hasFreshOrderBook(tokenId, config.ORDERBOOK_REFRESH_MS)) {
+  if (!options.force && hasFreshOrderBook(tokenId, options.maxAgeMs ?? config.ORDERBOOK_REFRESH_MS)) {
     return getCachedOrderBook(tokenId);
   }
   try {

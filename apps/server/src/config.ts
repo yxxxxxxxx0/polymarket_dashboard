@@ -47,6 +47,15 @@ const envSchema = z.object({
   ORDERBOOK_REFRESH_MS: z.coerce.number().int().min(100).default(500),
   RULE_EVALUATION_MS: z.coerce.number().int().min(100).default(1_000),
   ORDERBOOK_STALE_MS: z.coerce.number().int().min(100).default(1_500),
+  ORDERBOOK_STALE_MS_NORMAL: z.coerce.number().int().min(100).default(500),
+  ORDERBOOK_STALE_MS_FAST: z.coerce.number().int().min(100).default(300),
+  ORDERBOOK_STALE_MS_EMERGENCY: z.coerce.number().int().min(100).default(250),
+  EMERGENCY_ORDER_TIMEOUT_MS: z.coerce.number().int().min(500).default(3_000),
+  EMERGENCY_MAX_RETRIES: z.coerce.number().int().min(0).default(2),
+  ALLOW_EMERGENCY_SPREAD_OVERRIDE: z
+    .string()
+    .default("true")
+    .transform((value) => value.toLowerCase() === "true"),
   MARKET_STATS_REFRESH_MS: z.coerce.number().int().min(1_000).default(5_000),
   PORT: z.coerce.number().default(4000),
   WEB_ORIGIN: z.string().default("http://localhost:3000"),
