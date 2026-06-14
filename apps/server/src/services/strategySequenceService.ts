@@ -74,6 +74,10 @@ export type FillActivationInput = {
 
 type TerminalRuleStatus = "CANCELLED" | "FAILED";
 
+function isBreakoutParent(rule: Pick<StopLossRule, "ruleType">) {
+  return rule.ruleType === RuleType.BREAKOUT_BUY || rule.ruleType === RuleType.BUY_STOP;
+}
+
 export function ruleStatusForDisplay(status: StopLossStatus) {
   switch (status) {
     case StopLossStatus.PENDING:
@@ -313,10 +317,41 @@ export async function markRuleOrderSubmitted(ruleId: string, orderId?: string | 
   return updateRuleStatus(rule, StopLossStatus.ORDER_SUBMITTED, { orderId: orderId ?? rule.orderId, orderSubmitted: true }, "Rule order submitted", rawResponse);
 }
 
+async function cancelChildrenAfterTerminalParent(parent: StopLossRule, status: TerminalRuleStatus, message: string) {
+  if (!parent.strategySequenceId || parent.parentRuleId || !isBreakoutParent(parent)) return;
+  const children = await prisma.stopLossRule.findMany({
+    where: {
+      strategySequenceId: parent.strategySequenceId,
+      parentRuleId: parent.id,
+      status: {
+        in: [
+          StopLossStatus.INACTIVE_WAITING_FOR_PARENT,
+          StopLossStatus.ARMED,
+          StopLossStatus.ENABLED,
+          StopLossStatus.ACTIVE
+        ]
+      }
+    }
+  });
+  for (const child of children) {
+    await updateRuleStatus(child, StopLossStatus.CANCELLED, {
+      enabled: false,
+      cancelledAt: new Date()
+    }, `Parent breakout ${status.toLowerCase()}: ${message}`);
+  }
+  await prisma.strategySequence.update({
+    where: { id: parent.strategySequenceId },
+    data: { status }
+  }).catch(() => undefined);
+  invalidateStopLossRuleCache(parent.marketId);
+}
+
 export async function markRuleTerminal(ruleId: string, status: TerminalRuleStatus, message: string) {
   const rule = await prisma.stopLossRule.findUnique({ where: { id: ruleId } });
   if (!rule || rule.status === StopLossStatus.FILLED || rule.status === status) return rule;
-  return updateRuleStatus(rule, status, { enabled: false, cancelledAt: status === StopLossStatus.CANCELLED ? new Date() : rule.cancelledAt }, message);
+  const updated = await updateRuleStatus(rule, status, { enabled: false, cancelledAt: status === StopLossStatus.CANCELLED ? new Date() : rule.cancelledAt }, message);
+  await cancelChildrenAfterTerminalParent(updated, status, message);
+  return updated;
 }
 
 export async function recordBreakoutFill(ruleId: string, fill: FillActivationInput) {
@@ -556,6 +591,15 @@ export async function reconcileStrategySequences() {
       status: { in: [StopLossStatus.ORDER_SUBMITTED, StopLossStatus.SUBMITTED, StopLossStatus.FILLED] }
     }
   });
+  const terminalParents = await prisma.stopLossRule.findMany({
+    where: {
+      marketId,
+      ruleType: RuleType.BREAKOUT_BUY,
+      strategySequenceId: { not: null },
+      parentRuleId: null,
+      status: { in: [StopLossStatus.CANCELLED, StopLossStatus.FAILED] }
+    }
+  });
   let liveOrdersById = new Map<string, Record<string, unknown>>();
   try {
     const liveOrders = await getLiveOpenOrders();
@@ -580,6 +624,13 @@ export async function reconcileStrategySequences() {
     liveTrades = [];
   }
   const results = [];
+  for (const parent of terminalParents) {
+    results.push(await cancelChildrenAfterTerminalParent(
+      parent,
+      parent.status === StopLossStatus.FAILED ? StopLossStatus.FAILED : StopLossStatus.CANCELLED,
+      `Parent status is ${ruleStatusForDisplay(parent.status)}`
+    ));
+  }
   for (const parent of parents) {
     if (parent.status === StopLossStatus.FILLED && parent.filledShareAmount && parent.averageFillPrice) {
       results.push(await recordBreakoutFill(parent.id, { filledShareAmount: parent.filledShareAmount, averageFillPrice: parent.averageFillPrice, fullFill: true }));
