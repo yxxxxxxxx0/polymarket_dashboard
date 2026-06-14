@@ -16,6 +16,7 @@ export function GameTimePanel({ marketId, onGameMinuteChange }: { marketId: stri
   const [togglingPause, setTogglingPause] = useState(false);
   const [startingSecondHalf, setStartingSecondHalf] = useState(false);
   const [gapModelOpen, setGapModelOpen] = useState(false);
+  const [gapModel, setGapModel] = useState<GapModelConfig | null>(null);
   const [gapModelText, setGapModelText] = useState("");
   const [savingGapModel, setSavingGapModel] = useState(false);
 
@@ -46,6 +47,16 @@ export function GameTimePanel({ marketId, onGameMinuteChange }: { marketId: stri
     return `${minutes}:${String(remainingSeconds).padStart(2, "0")}`;
   }
 
+  function tierRangeLabel(index: number, tiers: GapModelConfig["breakout"]["tiers"]) {
+    const tier = tiers[index];
+    const next = tiers[index + 1];
+    return next ? `${tier.startMinute}'-${next.startMinute}'` : `${tier.startMinute}'+`;
+  }
+
+  function formatSpread(tier: GapModelConfig["breakout"]["tiers"][number]) {
+    return tier.disableMaxSpread ? `disabled / ${tier.maxSpreadCents}c` : `${tier.maxSpreadCents}c`;
+  }
+
   useEffect(() => {
     let mounted = true;
     api<GameTimeSetting>(`/api/settings/game-time/${encodeURIComponent(marketId)}`).then((next) => {
@@ -56,13 +67,14 @@ export function GameTimePanel({ marketId, onGameMinuteChange }: { marketId: stri
   }, [marketId]);
 
   useEffect(() => {
-    if (!gapModelOpen || gapModelText) return;
     let mounted = true;
     api<GapModelConfig>("/api/settings/gap-model").then((next) => {
-      if (mounted) setGapModelText(JSON.stringify(next, null, 2));
+      if (!mounted) return;
+      setGapModel(next);
+      if (!gapModelText) setGapModelText(JSON.stringify(next, null, 2));
     }).catch((error) => setMessage(error instanceof Error ? error.message : "Could not load gap model"));
     return () => { mounted = false; };
-  }, [gapModelOpen, gapModelText]);
+  }, []);
 
   const live = useMemo(() => {
     if (!setting?.kickoffTimeIso) return { elapsedSeconds: 0, minute: 0, status: "Waiting for kickoff" };
@@ -162,6 +174,7 @@ export function GameTimePanel({ marketId, onGameMinuteChange }: { marketId: stri
         method: "PUT",
         body: JSON.stringify(parsed)
       });
+      setGapModel(next);
       setGapModelText(JSON.stringify(next, null, 2));
       setMessage("Gap model saved");
       window.setTimeout(() => setMessage(""), 2_000);
@@ -210,8 +223,28 @@ export function GameTimePanel({ marketId, onGameMinuteChange }: { marketId: stri
         <div>Current game minute: <span className="font-mono">{live.minute}'</span></div>
         <div>Status: <span className="font-semibold">{live.status}</span></div>
         <div>Half: <span className="font-semibold">{live.status === "Second half" || setting?.phase === "SECOND_HALF" ? "Second" : live.status === "Half-time" ? "Half-time" : "First"}</span></div>
-        <div>Breakout: <span className="font-mono">{breakoutPreset.label}</span></div>
-        <div>Stop: <span className="font-mono">{stopPreset.label}</span></div>
+        <div>Current breakout: <span className="font-mono">{breakoutPreset.label}</span></div>
+        <div>Current stop: <span className="font-mono">{stopPreset.label}</span></div>
+        {gapModel && (
+          <div className="mt-2 border-t border-line pt-2">
+            <div className="mb-1 font-semibold">Full gap model</div>
+            <div className="grid grid-cols-[3.4rem_1fr_1fr] gap-x-2 gap-y-1 font-mono text-[11px] leading-4">
+              <span className="font-sans font-semibold">Time</span>
+              <span className="font-sans font-semibold">Breakout</span>
+              <span className="font-sans font-semibold">Stop</span>
+              {gapModel.breakout.tiers.map((breakoutTier, index) => {
+                const stopTier = gapModel.stopLoss.tiers[index];
+                return (
+                  <div key={`${breakoutTier.startMinute}-${index}`} className="contents">
+                    <span>{tierRangeLabel(index, gapModel.breakout.tiers)}</span>
+                    <span>{breakoutTier.slippageCents}c / {formatSpread(breakoutTier)}</span>
+                    <span>{stopTier ? `${stopTier.slippageCents}c / ${formatSpread(stopTier)}` : "-"}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
       <button className="secondary-button mt-3 w-full" onClick={() => setGapModelOpen((open) => !open)} type="button">
         <SlidersHorizontal className="h-4 w-4" />
