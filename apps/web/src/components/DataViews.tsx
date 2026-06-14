@@ -22,6 +22,19 @@ function cents(value: number) {
   return `${Number.isInteger(centsValue) ? centsValue.toFixed(0) : centsValue.toFixed(1)}¢`;
 }
 
+function shortId(value: unknown) {
+  if (typeof value !== "string" || value.length < 8) return cell(value);
+  return `${value.slice(0, 4)}...${value.slice(-4)}`;
+}
+
+function ruleRelationship(row: AnyRow) {
+  if (!row.strategySequenceId) return "Single rule";
+  if (row.parentRuleId) return `Child of ${shortId(row.parentRuleId)}`;
+  const childIds = Array.isArray(row.childRuleIds) ? row.childRuleIds : [];
+  if (childIds.length > 0) return `Parent breakout (${childIds.length} ${childIds.length === 1 ? "child" : "children"})`;
+  return "Sequence rule";
+}
+
 function PositionLedger({ positions }: { positions: AccountPositionSummary[] }) {
   return (
     <section className="overflow-hidden rounded-md border border-slate-800 bg-[#111820] text-slate-100">
@@ -142,10 +155,10 @@ export function StopLossView({ profile, refreshKey = 0, title = "Stop / Trail / 
         </div>
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[1600px] border-collapse">
+        <table className="w-full min-w-[1450px] border-collapse">
           <thead className="table-head">
             <tr>
-              {["Type", "Outcome", "Sequence", "Parent", "Children", "Trigger", "Current", "Hard", "Soft", "Active", "Distance", "Trail %", "Slip", "Max Spread", "Game Min", "Status", "Enabled", "Actions"].map((name) => (
+              {["Type", "Outcome", "Relationship", "Trigger", "Current", "Hard", "Soft", "Active", "Distance", "Trail %", "Slip", "Max Spread", "Game Min", "Status", "Enabled", "Actions"].map((name) => (
                 <th key={name} className="px-3 py-2">{name}</th>
               ))}
             </tr>
@@ -153,16 +166,14 @@ export function StopLossView({ profile, refreshKey = 0, title = "Stop / Trail / 
           <tbody>
             {rows.length === 0 && (
               <tr>
-                <td className="table-cell text-slate-500" colSpan={18}>No stop, trailing, or breakout rules yet.</td>
+                <td className="table-cell text-slate-500" colSpan={16}>No stop, trailing, or breakout rules yet.</td>
               </tr>
             )}
             {rows.map((row) => (
               <tr key={String(row.id)}>
                 <td className="table-cell">{cell(row.ruleType)}</td>
                 <td className="table-cell">{cell(row.outcomeName)}</td>
-                <td className="table-cell font-mono text-[11px]">{cell(row.strategySequenceId)}</td>
-                <td className="table-cell font-mono text-[11px]">{cell(row.parentRuleId)}</td>
-                <td className="table-cell font-mono text-[11px]">{cell(row.childRuleIds)}</td>
+                <td className="table-cell text-xs font-semibold text-slate-600" title={cell(row.strategySequenceId)}>{ruleRelationship(row)}</td>
                 <td className="table-cell">{cell(row.triggerType)}</td>
                 <td className="table-cell">{cell(row.currentPrice)}</td>
                 <td className="table-cell">{cell(row.hardStopPrice)}</td>
