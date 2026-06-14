@@ -4,7 +4,7 @@ import { createLiveOrder, cancelLiveMarketOrders, cancelLiveOrder, getLiveOpenOr
 import { assertConfiguredMarket, assertConfiguredToken, configuredTokenIds, marketScope, outcomeForToken } from "./singleMarketService.js";
 import { assertTradingAllowed } from "./tradingPolicy.js";
 import { getAppSettings } from "./settingsService.js";
-import { invalidateAccountSummaryCache } from "./accountService.js";
+import { accountSummary, invalidateAccountSummaryCache } from "./accountService.js";
 import { HttpError } from "../lib/http.js";
 
 export type OrderInput = {
@@ -21,6 +21,22 @@ export type OrderInput = {
 };
 
 const orderLocks = new Set<string>();
+
+function fixed(value: number, digits = 6) {
+  return value.toFixed(digits).replace(/\.?0+$/, "");
+}
+
+function improveBalanceError(message: string, side: OrderSide) {
+  const match = message.match(/balance:\s*(\d+),\s*order amount:\s*(\d+)/i);
+  if (!match) return message;
+  const balance = Number(match[1]) / 1_000_000;
+  const orderAmount = Number(match[2]) / 1_000_000;
+  if (!Number.isFinite(balance) || !Number.isFinite(orderAmount)) return message;
+  if (side === OrderSide.SELL) {
+    return `Sell size ${fixed(orderAmount)} shares exceeds available shares ${fixed(balance)}`;
+  }
+  return `Buy amount $${orderAmount.toFixed(2)} exceeds spendable USDC $${balance.toFixed(2)}`;
+}
 
 function orderLockKey(input: OrderInput, tradeMode: TradeMode) {
   return [tradeMode, input.marketId, input.tokenId, input.side, input.closeOnly ? "close" : "open"].join(":");
@@ -66,13 +82,31 @@ async function placeOrderUnlocked(input: OrderInput, tradeMode: TradeMode) {
     return { paper: true, order: openOrder };
   }
 
-  const response = await createLiveOrder({
-    marketId: input.marketId,
-    tokenId: input.tokenId,
-    side: input.side,
-    price: input.price,
-    size: input.size
-  });
+  if ((input.side === OrderSide.SELL || input.closeOnly) && (!input.source || input.source === "manual")) {
+    const account = await accountSummary({ force: true });
+    const availableShares = account.positions
+      .filter((position) => position.tokenId === input.tokenId && position.side === OrderSide.BUY)
+      .reduce((sum, position) => sum + position.size, 0);
+    if (Number.isFinite(availableShares) && input.size > availableShares + 1e-9) {
+      throw new HttpError(400, `Sell size ${fixed(input.size)} shares exceeds available shares ${fixed(availableShares)}`);
+    }
+  }
+
+  let response;
+  try {
+    response = await createLiveOrder({
+      marketId: input.marketId,
+      tokenId: input.tokenId,
+      side: input.side,
+      price: input.price,
+      size: input.size
+    });
+  } catch (error) {
+    if (error instanceof HttpError) {
+      throw new HttpError(error.status, improveBalanceError(error.message, input.side));
+    }
+    throw error;
+  }
   const exchangeOrderId = response.orderID;
 
   await prisma.tradeLog.create({

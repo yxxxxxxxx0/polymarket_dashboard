@@ -26,6 +26,7 @@ import { evaluateStopLossConfirmation } from "../apps/server/src/services/stopLo
 import { assertLiveOrderAccepted } from "../apps/server/src/services/clobService";
 import { childActivationUpdate, isFullFill, ruleStatusForDisplay, shouldActivateChildren } from "../apps/server/src/services/strategySequenceService";
 import { executionPrice, marketableBuyPrice, resolveEffectiveRiskSettings } from "../apps/server/src/services/stopLossService";
+import { computeEmergencyScore, emergencyBuyLimit, emergencySellLimit, estimateEmergencyGap, getEmergencyParams, shouldEmergencyBreakoutBuy, shouldEmergencyStopLoss } from "../apps/server/src/services/emergencyExecutionModel";
 import { estimateGapByGameMinute, getAggressiveBreakoutSettings, getAggressiveStopProtectionSettings, getGameMinute } from "../apps/web/src/lib/gameTime";
 
 const ofiConfig: RollingOfiConfig = {
@@ -297,6 +298,22 @@ assert.deepEqual(resolveEffectiveRiskSettings({
 assert.equal(executionPrice({ executionType: "MARKETABLE_LIMIT", stopPrice: 0.55, slippageLimit: 0.04 }, executionBook), 0.51);
 assert.equal(executionPrice({ executionType: "MARKETABLE_LIMIT", stopPrice: 0.55, slippageLimit: 0.04 }, executionBook, true), 0.40);
 assert.equal(marketableBuyPrice({ stopPrice: 0.55, slippageLimit: 0.05 }, executionBook), 0.66);
+assert.equal(Number(estimateEmergencyGap(90).toFixed(2)) <= 0.75, true);
+assert.deepEqual(getEmergencyParams(90), { slippage: 0.30, maxSpread: null, emergencyScoreStop: 0.60, emergencyScoreBreakout: 0.65 });
+const emergencyScore = computeEmergencyScore({
+  midNow: 0.56,
+  mid5sAgo: 0.54,
+  mid10sAgo: 0.50,
+  spread: 0.12,
+  nearDepthNow: 10,
+  normalNearDepth: 100,
+  gameMinute: 76
+});
+assert.equal(emergencyScore > 0.60, true);
+assert.equal(shouldEmergencyStopLoss({ entryPrice: 0.70, stopPrice: 0.54, midNow: 0.555, emergencyScore: 0.80, gameMinute: 76 }), true);
+assert.equal(shouldEmergencyBreakoutBuy({ breakoutTrigger: 0.58, midNow: 0.56, mid5sAgo: 0.54, emergencyScore: 0.72, gameMinute: 76 }), true);
+assert.equal(emergencySellLimit(0.44, 90), 0.14);
+assert.equal(emergencyBuyLimit(0.80, 90), 0.99);
 
 assert.equal(ruleStatusForDisplay(StopLossStatus.ARMED), "active");
 assert.equal(ruleStatusForDisplay(StopLossStatus.ORDER_SUBMITTED), "order_submitted");

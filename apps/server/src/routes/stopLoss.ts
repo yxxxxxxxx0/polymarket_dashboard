@@ -43,8 +43,10 @@ const stopLossBaseSchema = z.object({
   priceSlopeThreshold: z.coerce.number().optional(),
   maxSpread: z.coerce.number().min(0).max(1).optional(),
   disableMaxSpread: z.coerce.boolean().default(false).optional(),
-  aggressivePnLProtection: z.coerce.boolean().default(false).optional(),
-  aggressiveBreakout: z.coerce.boolean().default(false).optional(),
+  aggressivePnLProtection: z.coerce.boolean().default(true).optional(),
+  aggressiveBreakout: z.coerce.boolean().default(true).optional(),
+  emergencyStopEnabled: z.coerce.boolean().optional(),
+  emergencyBreakoutEnabled: z.coerce.boolean().optional(),
   strategySequenceId: z.string().optional(),
   parentRuleId: z.string().optional(),
   activationCondition: z.string().optional(),
@@ -96,9 +98,11 @@ stopLossRouter.post("/", asyncHandler(async (req, res) => {
   selectRequestProfile(req);
   const body = stopLossSchema.parse(req.body);
   assertConfiguredToken(body.tokenId);
-  const { outcome, ...data } = body;
+  const { outcome, emergencyStopEnabled, emergencyBreakoutEnabled, ...data } = body;
   res.json(await createStopLossRule({
     ...data,
+    aggressivePnLProtection: emergencyStopEnabled ?? data.aggressivePnLProtection,
+    aggressiveBreakout: emergencyBreakoutEnabled ?? data.aggressiveBreakout,
     outcomeName: body.outcomeName ?? outcome ?? outcomeForToken(body.tokenId)
   }));
 }));
@@ -132,11 +136,13 @@ stopLossRouter.patch("/:id", asyncHandler(async (req, res) => {
   const body = stopLossPatchSchema.parse(req.body);
   if (body.tokenId) assertConfiguredToken(body.tokenId);
   const existing = await prisma.stopLossRule.findFirstOrThrow({ where: { id, marketId } });
-  const { outcome, marketId: _marketId, conditionId: _conditionId, ...data } = body;
+  const { outcome, emergencyStopEnabled, emergencyBreakoutEnabled, marketId: _marketId, conditionId: _conditionId, ...data } = body;
   const updated = await prisma.stopLossRule.update({
     where: { id: existing.id },
     data: {
       ...data,
+      aggressivePnLProtection: emergencyStopEnabled ?? data.aggressivePnLProtection,
+      aggressiveBreakout: emergencyBreakoutEnabled ?? data.aggressiveBreakout,
       outcomeName: body.outcomeName ?? outcome
     }
   });

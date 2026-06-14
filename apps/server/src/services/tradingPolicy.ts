@@ -5,6 +5,11 @@ import { prisma } from "../lib/prisma.js";
 import { checkGeoblock } from "./geoblockService.js";
 import { getAppSettings } from "./settingsService.js";
 import { marketScope } from "./singleMarketService.js";
+import { accountSummary } from "./accountService.js";
+
+function money(value: number) {
+  return `$${value.toFixed(2)}`;
+}
 
 export async function assertTradingAllowed(input: {
   tradeMode: TradeMode;
@@ -36,6 +41,17 @@ export async function assertTradingAllowed(input: {
 
   if (input.tradeMode === TradeMode.LIVE && input.action === "CLOSE" && !geo.canClose) {
     throw new HttpError(403, "This location is blocked from trading");
+  }
+
+  if (input.tradeMode === TradeMode.LIVE && input.action === "OPEN" && input.size && input.price) {
+    const notional = input.size * input.price;
+    const account = await accountSummary({ force: true });
+    if (account.cash !== null && Number.isFinite(account.cash) && notional > account.cash + 1e-9) {
+      throw new HttpError(400, `Live buy amount ${money(notional)} exceeds cash balance ${money(account.cash)}`);
+    }
+    if (account.allowance !== null && Number.isFinite(account.allowance) && notional > account.allowance + 1e-9) {
+      throw new HttpError(400, `Live buy amount ${money(notional)} exceeds USDC allowance ${money(account.allowance)}`);
+    }
   }
 
   if (input.action === "OPEN" && input.size && input.price) {

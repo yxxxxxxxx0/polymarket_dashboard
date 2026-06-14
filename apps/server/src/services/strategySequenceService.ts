@@ -217,7 +217,7 @@ export async function createStrategySequence(config: StrategySequenceConfig) {
         priceSlopeThreshold: config.breakout.priceSlopeThreshold,
         maxSpread: config.breakout.maxSpread,
         disableMaxSpread: config.breakout.disableMaxSpread ?? false,
-        aggressiveBreakout: config.breakout.aggressiveBreakout ?? false,
+        aggressiveBreakout: config.breakout.aggressiveBreakout ?? true,
         triggerType,
         executionType,
         slippageLimit,
@@ -253,7 +253,7 @@ export async function createStrategySequence(config: StrategySequenceConfig) {
           slippageLimit: config.stopLoss?.slippageLimit ?? slippageLimit,
           maxSpread: config.stopLoss?.maxSpread,
           disableMaxSpread: config.stopLoss?.disableMaxSpread ?? false,
-          aggressivePnLProtection: config.stopLoss?.aggressivePnLProtection ?? false,
+          aggressivePnLProtection: config.stopLoss?.aggressivePnLProtection ?? true,
           maxSellSize: 1,
           enabled: false,
           status: StopLossStatus.INACTIVE_WAITING_FOR_PARENT
@@ -291,7 +291,7 @@ export async function createStrategySequence(config: StrategySequenceConfig) {
           slippageLimit: config.trailingStop?.slippageLimit ?? slippageLimit,
           maxSpread: config.trailingStop?.maxSpread,
           disableMaxSpread: config.trailingStop?.disableMaxSpread ?? false,
-          aggressivePnLProtection: config.trailingStop?.aggressivePnLProtection ?? false,
+          aggressivePnLProtection: config.trailingStop?.aggressivePnLProtection ?? true,
           maxSellSize: 1,
           enabled: false,
           status: StopLossStatus.INACTIVE_WAITING_FOR_PARENT

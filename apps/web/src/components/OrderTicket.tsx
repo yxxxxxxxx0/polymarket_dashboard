@@ -18,9 +18,23 @@ function money(value: number | null | undefined) {
   return value === null || value === undefined || !Number.isFinite(value) ? "Unavailable" : `$${value.toFixed(2)}`;
 }
 
-function friendlyError(error: unknown) {
+function friendlyError(error: unknown, context?: { side: "buy" | "sell" }) {
   if (!(error instanceof Error)) return "Order failed";
   if (error.message === "Failed to fetch") return `Cannot reach the dashboard API at ${API_BASE || "the current web origin"}.`;
+  const clobBalanceMatch = error.message.match(/balance:\s*(\d+),\s*order amount:\s*(\d+)/i);
+  if (clobBalanceMatch) {
+    const balance = Number(clobBalanceMatch[1]) / 1_000_000;
+    const orderAmount = Number(clobBalanceMatch[2]) / 1_000_000;
+    if (Number.isFinite(balance) && Number.isFinite(orderAmount)) {
+      if (context?.side === "sell") {
+        return `Sell size ${orderAmount.toFixed(6)} shares exceeds available shares ${balance.toFixed(6)}.`;
+      }
+      if (context?.side === "buy") {
+        return `Buy amount $${orderAmount.toFixed(2)} exceeds spendable USDC $${balance.toFixed(2)}.`;
+      }
+      return `Order amount ${orderAmount.toFixed(6)} exceeds available balance ${balance.toFixed(6)}.`;
+    }
+  }
   return error.message;
 }
 
@@ -79,12 +93,18 @@ export function OrderTicket({ profile, marketId, conditionId, tokenId, outcomeNa
     return book.bestBid ?? book.midpoint ?? book.bestAsk ?? book.lastTradePrice;
   }, [book, side]);
 
+  const maxBuyNotional = useMemo(() => {
+    const limits = [account?.cash, account?.allowance]
+      .filter((value): value is number => value !== null && value !== undefined && Number.isFinite(value) && value >= 0);
+    return limits.length === 0 ? null : Math.min(...limits);
+  }, [account?.allowance, account?.cash]);
+
   const maxSharesCanBuy = useMemo(() => {
     const outcome = account?.outcomes.find((item) => item.tokenId === tokenId);
+    if (currentPrice && currentPrice > 0 && maxBuyNotional !== null) return maxBuyNotional / currentPrice;
     if (outcome?.sharesCanBuy !== null && outcome?.sharesCanBuy !== undefined) return outcome.sharesCanBuy;
-    if (account?.cash !== null && account?.cash !== undefined && currentPrice && currentPrice > 0) return account.cash / currentPrice;
     return null;
-  }, [account, currentPrice, tokenId]);
+  }, [account?.outcomes, currentPrice, maxBuyNotional, tokenId]);
 
   const defaultSize = useMemo(() => {
     if (maxSharesCanBuy === null || maxSharesCanBuy === undefined || !Number.isFinite(maxSharesCanBuy)) return 0;
@@ -133,6 +153,12 @@ export function OrderTicket({ profile, marketId, conditionId, tokenId, outcomeNa
       if (side === "sell" && tradingSettings.geo && !tradingSettings.geo.canClose) return "This location cannot close positions";
       if (side === "buy" && account?.cash !== null && account?.cash !== undefined && account.cash <= 0) return "Live cash balance is zero";
       if (side === "buy" && account?.allowance !== null && account?.allowance !== undefined && account.allowance <= 0) return "USDC allowance is zero";
+      if (side === "buy" && account?.cash !== null && account?.cash !== undefined && Number.isFinite(account.cash) && notional > account.cash + 1e-9) {
+        return `Order amount ${money(notional)} exceeds cash balance ${money(account.cash)}`;
+      }
+      if (side === "buy" && account?.allowance !== null && account?.allowance !== undefined && Number.isFinite(account.allowance) && notional > account.allowance + 1e-9) {
+        return `Order amount ${money(notional)} exceeds USDC allowance ${money(account.allowance)}`;
+      }
     }
     return "";
   }, [account, notional, price, side, size, tokenId, tradeMode, tradingSettings]);
@@ -153,7 +179,7 @@ export function OrderTicket({ profile, marketId, conditionId, tokenId, outcomeNa
       setTradeMode(value.tradeMode);
       setTradingSettings(value);
     }).catch((error) => {
-      const text = friendlyError(error);
+      const text = friendlyError(error, { side });
       setMessage(text);
       setNotification({ kind: "error", text });
       setTradeMode("PAPER");
@@ -180,7 +206,7 @@ export function OrderTicket({ profile, marketId, conditionId, tokenId, outcomeNa
       setMessage("");
       setNotification({ kind: "success", text });
     } catch (error) {
-      const text = friendlyError(error);
+      const text = friendlyError(error, { side });
       setMessage(text);
       setNotification({ kind: "error", text });
     } finally {

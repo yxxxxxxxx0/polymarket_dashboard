@@ -18,10 +18,20 @@ import { evaluateStopLossConfirmation } from "./stopLossDecision.js";
 import { cancelMarketOrders, placeOrder } from "./tradingService.js";
 import { handleSequenceExitFilled, markRuleOrderSubmitted, markRuleTerminal, reconcileStrategySequences, ruleStatusForDisplay } from "./strategySequenceService.js";
 import { DEFAULT_GAP_MODEL_CONFIG, getGapModelConfig, getMarketGameTime, tierForGameMinute, type GapModelConfig } from "./gameTimeService.js";
+import {
+  computeEmergencyScore,
+  emergencyBuyLimit,
+  emergencySellLimit,
+  getEmergencyParams,
+  shouldEmergencyBreakoutBuy,
+  shouldEmergencyStopLoss
+} from "./emergencyExecutionModel.js";
 
 const confirmationTicks = new Map<string, number>();
 const recentPrices = new Map<string, Array<{ timestamp: number; price: number }>>();
 const midpointHistory = new Map<string, Array<{ timestamp: number; midpoint: number }>>();
+const emergencyOrderbookHistory = new Map<string, Array<{ timestamp: number; mid: number; spread: number; bidDepthNear: number; askDepthNear: number }>>();
+const emergencyCooldowns = new Map<string, number>();
 const tokenEvaluationQueues = new Map<string, { running: boolean; pending: OrderBook | null }>();
 const tokenExecutionLocks = new Set<string>();
 let enabledRulesCache: { marketId: string; expiresAt: number; rules: StopLossRule[] } | null = null;
@@ -29,6 +39,9 @@ let subscribedToOrderBookUpdates = false;
 let cachedTradeMode: { value: TradeMode; expiresAt: number } | null = null;
 const gameMinuteCache = new Map<string, { expiresAt: number; gameMinute: number | null }>();
 let gapModelCache: { expiresAt: number; value: GapModelConfig } | null = null;
+const EMERGENCY_HISTORY_MS = 30_000;
+const EMERGENCY_COOLDOWN_MS = 5_000;
+const EMERGENCY_SPREAD_OVERRIDE_SCORE = 0.85;
 
 function referencePrice(book: OrderBook, triggerType: StopLossTriggerType): number | null {
   switch (triggerType) {
@@ -105,6 +118,132 @@ function depthWithinOneCent(book: OrderBook, side: "bid" | "ask") {
   return book.bids
     .filter((level) => level.price <= Number(book.bestBid) && level.price >= Number(book.bestBid) - 0.01)
     .reduce((sum, level) => sum + level.size, 0);
+}
+
+function computeNearDepth(book: OrderBook, side: "bid" | "ask", centsRange = 0.03) {
+  if (side === "ask") {
+    if (book.bestAsk === null) return 0;
+    return book.asks
+      .filter((level) => level.price >= Number(book.bestAsk) && level.price <= Number(book.bestAsk) + centsRange)
+      .reduce((sum, level) => sum + level.size, 0);
+  }
+
+  if (book.bestBid === null) return 0;
+  return book.bids
+    .filter((level) => level.price <= Number(book.bestBid) && level.price >= Number(book.bestBid) - centsRange)
+    .reduce((sum, level) => sum + level.size, 0);
+}
+
+function rememberEmergencyOrderbook(tokenId: string, book: OrderBook) {
+  const mid = book.midpoint ?? (
+    book.bestBid !== null && book.bestAsk !== null ? (book.bestBid + book.bestAsk) / 2 : null
+  );
+  const spread = book.spread ?? (
+    book.bestBid !== null && book.bestAsk !== null ? book.bestAsk - book.bestBid : null
+  );
+  if (mid === null || spread === null || !Number.isFinite(mid) || !Number.isFinite(spread)) return null;
+
+  const now = Date.now();
+  const snapshot = {
+    timestamp: now,
+    mid,
+    spread,
+    bidDepthNear: computeNearDepth(book, "bid"),
+    askDepthNear: computeNearDepth(book, "ask")
+  };
+  const next = [...(emergencyOrderbookHistory.get(tokenId) ?? []), snapshot]
+    .filter((point) => now - point.timestamp <= EMERGENCY_HISTORY_MS)
+    .slice(-300);
+  emergencyOrderbookHistory.set(tokenId, next);
+  return snapshot;
+}
+
+function getSnapshotAgo(tokenId: string, secondsAgo: number) {
+  const history = emergencyOrderbookHistory.get(tokenId) ?? [];
+  if (history.length === 0) return null;
+  const target = Date.now() - secondsAgo * 1_000;
+  return history.reduce((best, item) => (
+    Math.abs(item.timestamp - target) < Math.abs(best.timestamp - target) ? item : best
+  ), history[0]);
+}
+
+function computeRollingNormalDepth(tokenId: string, side: "bid" | "ask") {
+  const history = emergencyOrderbookHistory.get(tokenId) ?? [];
+  const depths = history
+    .map((item) => side === "bid" ? item.bidDepthNear : item.askDepthNear)
+    .filter((depth) => Number.isFinite(depth) && depth >= 0);
+  if (depths.length === 0) return 0;
+  return depths.reduce((sum, depth) => sum + depth, 0) / depths.length;
+}
+
+function emergencyStressMetrics(tokenId: string, book: OrderBook, side: "bid" | "ask", gameMinute: number) {
+  const current = rememberEmergencyOrderbook(tokenId, book);
+  if (!current) return null;
+  const fiveSecondsAgo = getSnapshotAgo(tokenId, 5) ?? current;
+  const tenSecondsAgo = getSnapshotAgo(tokenId, 10) ?? fiveSecondsAgo;
+  const nearDepthNow = side === "bid" ? current.bidDepthNear : current.askDepthNear;
+  const normalNearDepth = computeRollingNormalDepth(tokenId, side);
+  const emergencyScore = computeEmergencyScore({
+    midNow: current.mid,
+    mid5sAgo: fiveSecondsAgo.mid,
+    mid10sAgo: tenSecondsAgo.mid,
+    spread: current.spread,
+    nearDepthNow,
+    normalNearDepth: normalNearDepth || nearDepthNow || 1e-9,
+    gameMinute
+  });
+  const depthVacuumScore = clip(1 - nearDepthNow / Math.max(normalNearDepth || nearDepthNow || 1e-9, 1e-9), 0, 1);
+
+  return {
+    midNow: current.mid,
+    mid5sAgo: fiveSecondsAgo.mid,
+    mid10sAgo: tenSecondsAgo.mid,
+    spread: current.spread,
+    priceMove5s: current.mid - fiveSecondsAgo.mid,
+    priceMove10s: current.mid - tenSecondsAgo.mid,
+    bidDepthNear: current.bidDepthNear,
+    askDepthNear: current.askDepthNear,
+    nearDepthNow,
+    normalNearDepth,
+    depthVacuumScore,
+    emergencyScore
+  };
+}
+
+function emergencySpreadOk(spread: number | null, gameMinute: number, emergencyScore: number) {
+  const maxSpread = getEmergencyParams(gameMinute).maxSpread;
+  if (maxSpread === null) return true;
+  return (spread !== null && spread <= maxSpread) || emergencyScore >= EMERGENCY_SPREAD_OVERRIDE_SCORE;
+}
+
+function emergencyCooldownKey(ruleId: string, type: "stop" | "breakout") {
+  return `${ruleId}:${type}`;
+}
+
+function emergencyOnCooldown(ruleId: string, type: "stop" | "breakout") {
+  const lastAttempt = emergencyCooldowns.get(emergencyCooldownKey(ruleId, type));
+  return lastAttempt !== undefined && Date.now() - lastAttempt < EMERGENCY_COOLDOWN_MS;
+}
+
+function markEmergencyAttempt(ruleId: string, type: "stop" | "breakout") {
+  emergencyCooldowns.set(emergencyCooldownKey(ruleId, type), Date.now());
+}
+
+function emergencyLogPayload(rule: StopLossRule, metrics: NonNullable<ReturnType<typeof emergencyStressMetrics>>, gameMinute: number, extra: Record<string, unknown>) {
+  return {
+    ruleId: rule.id,
+    tokenId: rule.tokenId,
+    outcomeName: rule.outcomeName,
+    gameMinute,
+    emergencyScore: Number(metrics.emergencyScore.toFixed(4)),
+    spread: Number(metrics.spread.toFixed(4)),
+    priceMove5s: Number(metrics.priceMove5s.toFixed(4)),
+    priceMove10s: Number(metrics.priceMove10s.toFixed(4)),
+    nearDepthNow: Number(metrics.nearDepthNow.toFixed(4)),
+    normalNearDepth: Number(metrics.normalNearDepth.toFixed(4)),
+    depthVacuumScore: Number(metrics.depthVacuumScore.toFixed(4)),
+    ...extra
+  };
 }
 
 function rememberMidpointMove(tokenId: string, book: OrderBook) {
@@ -399,31 +538,80 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
     const breakoutPrice = liveRule.breakoutPrice ?? liveRule.stopPrice;
     const spread = book.spread ?? (book.bestAsk !== null && book.bestBid !== null ? book.bestAsk - book.bestBid : null);
     const rollingOfi = getCachedOfi(liveRule.tokenId)?.rollingOfi30s ?? 0;
-    const shouldBuy = breakoutRef !== null && breakoutRef >= breakoutPrice;
-    const spreadOk = risk.disableMaxSpread || risk.maxSpread === null || risk.maxSpread === undefined || (spread !== null && spread <= risk.maxSpread);
+    const emergencyBreakoutMetrics = liveRule.aggressiveBreakout && gameMinute !== null
+      ? emergencyStressMetrics(liveRule.tokenId, book, "ask", gameMinute)
+      : null;
+    const emergencyBreakoutTriggered = Boolean(
+      liveRule.aggressiveBreakout
+      && gameMinute !== null
+      && emergencyBreakoutMetrics
+      && shouldEmergencyBreakoutBuy({
+        breakoutTrigger: breakoutPrice,
+        midNow: emergencyBreakoutMetrics.midNow,
+        mid5sAgo: emergencyBreakoutMetrics.mid5sAgo,
+        emergencyScore: emergencyBreakoutMetrics.emergencyScore,
+        gameMinute
+      })
+    );
+    const shouldBuy = (breakoutRef !== null && breakoutRef >= breakoutPrice) || emergencyBreakoutTriggered;
+    const spreadOk = emergencyBreakoutTriggered && gameMinute !== null && emergencyBreakoutMetrics
+      ? emergencySpreadOk(spread, gameMinute, emergencyBreakoutMetrics.emergencyScore)
+      : risk.disableMaxSpread || risk.maxSpread === null || risk.maxSpread === undefined || (spread !== null && spread <= risk.maxSpread);
     const ofiOk = !liveRule.useOfiConfirmation || rollingOfi >= (liveRule.ofiBuyThreshold ?? config.OFI_BUY_THRESHOLD);
     const slopeOk = !liveRule.usePriceSlopeConfirmation || (priceSlope !== null && priceSlope >= (liveRule.priceSlopeThreshold ?? 0));
+    if (emergencyBreakoutTriggered && emergencyOnCooldown(liveRule.id, "breakout")) {
+      return {
+        triggered: false,
+        referencePrice: breakoutRef,
+        spread,
+        rollingOfi,
+        priceSlope,
+        status: liveRule.status,
+        emergencyMetrics: emergencyBreakoutMetrics,
+        message: "Emergency breakout skipped during duplicate-protection cooldown"
+      };
+    }
     if (!shouldBuy) {
       return {
         triggered: false,
         referencePrice: breakoutRef,
         distanceToTrigger: breakoutRef === null ? null : breakoutPrice - breakoutRef,
-        status: liveRule.status
+        status: liveRule.status,
+        emergencyMetrics: emergencyBreakoutMetrics
       };
     }
     if (!spreadOk || !ofiOk || !slopeOk) {
-      return { triggered: false, referencePrice: breakoutRef, spread, rollingOfi, priceSlope, spreadOk, ofiOk, slopeOk, status: liveRule.status, effectiveRisk: risk };
+      return { triggered: false, referencePrice: breakoutRef, spread, rollingOfi, priceSlope, spreadOk, ofiOk, slopeOk, status: liveRule.status, effectiveRisk: risk, emergencyMetrics: emergencyBreakoutMetrics };
     }
 
     return withTokenExecutionLock(liveRule.tokenId, async () => {
       const executionBook = await freshestOrderBook(liveRule.tokenId, book);
       assertFreshEnoughForExecution(executionBook);
       const executionMovement = rememberMidpointMove(liveRule.tokenId, executionBook);
-      const executionRisk = resolveEffectiveRiskSettings(liveRule, await currentGameMinute(liveRule.marketId), executionBook, await currentGapModelConfig(), executionMovement);
+      const executionGameMinute = await currentGameMinute(liveRule.marketId);
+      const executionRisk = resolveEffectiveRiskSettings(liveRule, executionGameMinute, executionBook, await currentGapModelConfig(), executionMovement);
       const executionRef = referencePrice(executionBook, liveRule.breakoutReferenceSource ?? liveRule.triggerType);
       const executionSpread = executionBook.spread ?? (executionBook.bestAsk !== null && executionBook.bestBid !== null ? executionBook.bestAsk - executionBook.bestBid : null);
-      const stillTriggered = executionRef !== null && executionRef >= breakoutPrice;
-      const stillSpreadOk = executionRisk.disableMaxSpread || executionRisk.maxSpread === null || executionRisk.maxSpread === undefined || (executionSpread !== null && executionSpread <= executionRisk.maxSpread);
+      const executionEmergencyMetrics = liveRule.aggressiveBreakout && executionGameMinute !== null
+        ? emergencyStressMetrics(liveRule.tokenId, executionBook, "ask", executionGameMinute)
+        : null;
+      const executionEmergencyBreakout = Boolean(
+        liveRule.aggressiveBreakout
+        && executionGameMinute !== null
+        && executionEmergencyMetrics
+        && shouldEmergencyBreakoutBuy({
+          breakoutTrigger: breakoutPrice,
+          midNow: executionEmergencyMetrics.midNow,
+          mid5sAgo: executionEmergencyMetrics.mid5sAgo,
+          emergencyScore: executionEmergencyMetrics.emergencyScore,
+          gameMinute: executionGameMinute
+        })
+      );
+      const executionNormalBreakout = executionRef !== null && executionRef >= breakoutPrice;
+      const stillTriggered = executionNormalBreakout || executionEmergencyBreakout;
+      const stillSpreadOk = executionEmergencyBreakout && executionGameMinute !== null && executionEmergencyMetrics
+        ? emergencySpreadOk(executionSpread, executionGameMinute, executionEmergencyMetrics.emergencyScore)
+        : executionRisk.disableMaxSpread || executionRisk.maxSpread === null || executionRisk.maxSpread === undefined || (executionSpread !== null && executionSpread <= executionRisk.maxSpread);
       if (!stillTriggered || !stillSpreadOk) {
         return {
           triggered: false,
@@ -431,6 +619,7 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
           spread: executionSpread,
           status: liveRule.status,
           effectiveRisk: executionRisk,
+          emergencyMetrics: executionEmergencyMetrics,
           message: "Breakout skipped because the fresh orderbook no longer satisfies trigger conditions"
         };
       }
@@ -438,11 +627,23 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
       const claimedRule = await claimRuleExecution(liveRule, executionRef);
       if (!claimedRule) return null;
 
-      const price = marketableBuyPrice({ ...claimedRule, slippageLimit: executionRisk.slippageLimit }, executionBook);
+      const useEmergencyExecution = Boolean(executionEmergencyBreakout && executionGameMinute !== null && executionEmergencyMetrics);
+      const price = useEmergencyExecution && executionBook.bestAsk !== null && executionGameMinute !== null
+        ? emergencyBuyLimit(executionBook.bestAsk, executionGameMinute)
+        : marketableBuyPrice({ ...claimedRule, slippageLimit: executionRisk.slippageLimit }, executionBook);
       const sizeUsd = claimedRule.breakoutSizeUsd ?? claimedRule.positionSize;
       const size = price && price > 0 ? sizeUsd / price : 0;
       try {
         if (price === null || size <= 0) throw new Error("No executable buy price");
+        if (useEmergencyExecution && executionEmergencyMetrics && executionGameMinute !== null) {
+          markEmergencyAttempt(claimedRule.id, "breakout");
+          console.log("[EmergencyBreakout]", emergencyLogPayload(claimedRule, executionEmergencyMetrics, executionGameMinute, {
+            breakoutPrice,
+            executionPrice: price,
+            size,
+            source: "MARKETABLE_LIMIT"
+          }));
+        }
         const response = await placeOrder({
           marketId: claimedRule.marketId,
           conditionId: claimedRule.conditionId ?? undefined,
@@ -463,7 +664,9 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
             size,
             tradeMode,
             success: true,
-            message: `Breakout buy triggered (${executionRisk.label})`,
+            message: useEmergencyExecution && executionEmergencyMetrics
+              ? `Emergency breakout buy triggered (score ${executionEmergencyMetrics.emergencyScore.toFixed(2)}, ${executionRisk.label})`
+              : `Breakout buy triggered (${executionRisk.label})`,
             rawResponse: JSON.stringify(response)
           }
         });
@@ -516,9 +719,39 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
   });
   if (softDecision) confirmationTicks.set(confirmationKey(liveRule.id, "SOFT_OFI_STOP"), softDecision.confirmationTicks);
   const softConfirmed = Boolean(softDecision?.priceTriggered && (!liveRule.useOfiConfirmationForSoftStop || softDecision.shouldExit));
-  const triggerReason = forceExit ? "TAKE_PROFIT" : hardConfirmed ? "HARD_STOP" : softConfirmed ? "SOFT_OFI_STOP" : null;
   const spread = book.spread ?? (book.bestAsk !== null && book.bestBid !== null ? book.bestAsk - book.bestBid : null);
-  const spreadOk = risk.disableMaxSpread || risk.maxSpread === null || risk.maxSpread === undefined || (spread !== null && spread <= risk.maxSpread);
+  const emergencyStopMetrics = liveRule.aggressivePnLProtection && gameMinute !== null
+    ? emergencyStressMetrics(liveRule.tokenId, book, "bid", gameMinute)
+    : null;
+  const emergencyStopTriggered = Boolean(
+    liveRule.aggressivePnLProtection
+    && gameMinute !== null
+    && emergencyStopMetrics
+    && shouldEmergencyStopLoss({
+      entryPrice: liveRule.entryPrice,
+      stopPrice: hardStopPrice,
+      midNow: emergencyStopMetrics.midNow,
+      emergencyScore: emergencyStopMetrics.emergencyScore,
+      gameMinute
+    })
+  );
+  const triggerReason = forceExit ? "TAKE_PROFIT" : emergencyStopTriggered ? "EMERGENCY_STOP" : hardConfirmed ? "HARD_STOP" : softConfirmed ? "SOFT_OFI_STOP" : null;
+  const spreadOk = triggerReason === "EMERGENCY_STOP" && gameMinute !== null && emergencyStopMetrics
+    ? emergencySpreadOk(spread, gameMinute, emergencyStopMetrics.emergencyScore)
+    : risk.disableMaxSpread || risk.maxSpread === null || risk.maxSpread === undefined || (spread !== null && spread <= risk.maxSpread);
+
+  if (triggerReason === "EMERGENCY_STOP" && emergencyOnCooldown(liveRule.id, "stop")) {
+    return {
+      triggered: false,
+      referencePrice: ref,
+      rollingOfi,
+      spread,
+      spreadOk,
+      status: liveRule.status,
+      emergencyMetrics: emergencyStopMetrics,
+      message: "Emergency stop skipped during duplicate-protection cooldown"
+    };
+  }
 
   if (!triggerReason || !spreadOk) {
     return {
@@ -534,7 +767,8 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
       ofiConfirmed: hardDecision.ofiConfirmed || Boolean(softDecision?.ofiConfirmed),
       confirmationTicks: Math.max(hardDecision.confirmationTicks, softDecision?.confirmationTicks ?? 0),
       requiredConfirmationTicks: config.STOP_OFI_CONFIRMATION_TICKS,
-      effectiveRisk: risk
+      effectiveRisk: risk,
+      emergencyMetrics: emergencyStopMetrics
     };
   }
 
@@ -542,12 +776,44 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
     const executionBook = await freshestOrderBook(liveRule.tokenId, book);
     assertFreshEnoughForExecution(executionBook);
     const executionRef = referencePrice(executionBook, liveRule.triggerType);
+    const executionGameMinute = await currentGameMinute(liveRule.marketId);
+    const executionMovement = rememberMidpointMove(liveRule.tokenId, executionBook);
+    const executionRisk = resolveEffectiveRiskSettings(liveRule, executionGameMinute, executionBook, await currentGapModelConfig(), executionMovement);
+    const executionSpread = executionBook.spread ?? (executionBook.bestAsk !== null && executionBook.bestBid !== null ? executionBook.bestAsk - executionBook.bestBid : null);
+    const executionEmergencyMetrics = liveRule.aggressivePnLProtection && executionGameMinute !== null
+      ? emergencyStressMetrics(liveRule.tokenId, executionBook, "bid", executionGameMinute)
+      : null;
+    const executionEmergencyStop = Boolean(
+      liveRule.aggressivePnLProtection
+      && executionGameMinute !== null
+      && executionEmergencyMetrics
+      && shouldEmergencyStopLoss({
+        entryPrice: liveRule.entryPrice,
+        stopPrice: hardStopPrice,
+        midNow: executionEmergencyMetrics.midNow,
+        emergencyScore: executionEmergencyMetrics.emergencyScore,
+        gameMinute: executionGameMinute
+      })
+    );
+    const useEmergencyExecution = Boolean(triggerReason === "EMERGENCY_STOP" || (triggerReason !== "TAKE_PROFIT" && executionEmergencyStop));
+    const executionSpreadOk = useEmergencyExecution && executionGameMinute !== null && executionEmergencyMetrics
+      ? emergencySpreadOk(executionSpread, executionGameMinute, executionEmergencyMetrics.emergencyScore)
+      : executionRisk.disableMaxSpread || executionRisk.maxSpread === null || executionRisk.maxSpread === undefined || (executionSpread !== null && executionSpread <= executionRisk.maxSpread);
+
+    if (triggerReason === "EMERGENCY_STOP" && !executionEmergencyStop) {
+      return {
+        triggered: false,
+        referencePrice: executionRef,
+        spread: executionSpread,
+        status: liveRule.status,
+        effectiveRisk: executionRisk,
+        emergencyMetrics: executionEmergencyMetrics,
+        message: "Emergency stop skipped because the fresh orderbook no longer satisfies stress conditions"
+      };
+    }
+
     const claimedRule = await claimRuleExecution(liveRule, executionRef);
     if (!claimedRule) return null;
-    const executionMovement = rememberMidpointMove(claimedRule.tokenId, executionBook);
-    const executionRisk = resolveEffectiveRiskSettings(claimedRule, await currentGameMinute(claimedRule.marketId), executionBook, await currentGapModelConfig(), executionMovement);
-    const executionSpread = executionBook.spread ?? (executionBook.bestAsk !== null && executionBook.bestBid !== null ? executionBook.bestAsk - executionBook.bestBid : null);
-    const executionSpreadOk = executionRisk.disableMaxSpread || executionRisk.maxSpread === null || executionRisk.maxSpread === undefined || (executionSpread !== null && executionSpread <= executionRisk.maxSpread);
 
     const position = claimedRule.positionId
     ? await prisma.position.findFirst({ where: { id: claimedRule.positionId, marketId } })
@@ -559,11 +825,22 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
     const availableSize = Math.max(0, position?.size ?? claimedRule.positionSize);
     const exitSize = Math.min(availableSize, claimedRule.positionSize, claimedRule.maxSellSize);
     const emergencyPnLProtection = executionRisk.dynamic && executionRisk.gameMinute !== null && executionRisk.gameMinute >= 85;
-    const price = executionPrice({ ...claimedRule, slippageLimit: executionRisk.slippageLimit }, executionBook, emergencyPnLProtection);
+    const price = useEmergencyExecution && executionBook.bestBid !== null && executionGameMinute !== null
+      ? emergencySellLimit(executionBook.bestBid, executionGameMinute)
+      : executionPrice({ ...claimedRule, slippageLimit: executionRisk.slippageLimit }, executionBook, emergencyPnLProtection);
 
     try {
       if (exitSize <= 0) throw new Error("No available position size to close");
       if (!executionSpreadOk) throw new Error(`Spread ${executionSpread?.toFixed(3) ?? "unknown"} exceeds effective max spread ${executionRisk.maxSpread}`);
+      if (useEmergencyExecution && executionEmergencyMetrics && executionGameMinute !== null) {
+        markEmergencyAttempt(claimedRule.id, "stop");
+        console.log("[EmergencyStop]", emergencyLogPayload(claimedRule, executionEmergencyMetrics, executionGameMinute, {
+          hardStopPrice,
+          executionPrice: price,
+          size: exitSize,
+          source: "MARKETABLE_LIMIT"
+        }));
+      }
 
       let response: unknown;
       if (claimedRule.executionType === StopLossExecutionType.CANCEL_ONLY) {
@@ -592,7 +869,7 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
           size: exitSize,
           tradeMode,
           success: true,
-          message: `${triggerReason === "TAKE_PROFIT" ? "Take profit" : triggerReason === "SOFT_OFI_STOP" ? "Soft OFI stop" : claimedRule.ruleType === RuleType.TRAILING_STOP ? "Trailing hard stop" : "Hard stop"} triggered (${executionRisk.label})`,
+          message: `${triggerReason === "TAKE_PROFIT" ? "Take profit" : triggerReason === "EMERGENCY_STOP" ? `Emergency stop${executionEmergencyMetrics ? ` (score ${executionEmergencyMetrics.emergencyScore.toFixed(2)})` : ""}` : triggerReason === "SOFT_OFI_STOP" ? "Soft OFI stop" : claimedRule.ruleType === RuleType.TRAILING_STOP ? "Trailing hard stop" : "Hard stop"} triggered (${executionRisk.label})`,
           rawResponse: JSON.stringify(response)
         }
       });
@@ -683,9 +960,11 @@ export async function listStopLossRulesWithLiveState() {
 
   return Promise.all(rules.map(async (rule) => {
     let livePrice = rule.currentPrice;
+    let liveBook: OrderBook | null = null;
     try {
       const cached = getCachedOrderBook(rule.tokenId);
       const book = cached.bestBid !== null || cached.bestAsk !== null ? cached : await fetchOrderBook(rule.tokenId);
+      liveBook = book;
       livePrice = referencePrice(book, rule.triggerType) ?? livePrice;
     } catch {
       // Keep stored price if the live request is temporarily unavailable.
@@ -694,6 +973,9 @@ export async function listStopLossRulesWithLiveState() {
     const distanceToStop = livePrice === null ? null : livePrice - activeStopPrice;
     const distanceToTrigger = livePrice === null ? null : activeStopPrice - livePrice;
     const effectiveRisk = resolveEffectiveRiskSettings(rule, await currentGameMinute(rule.marketId), null, await currentGapModelConfig());
+    const emergencyMetrics = effectiveRisk.gameMinute !== null && liveBook
+      ? emergencyStressMetrics(rule.tokenId, liveBook, isBreakoutRule(rule.ruleType) ? "ask" : "bid", effectiveRisk.gameMinute)
+      : null;
     return {
       ...rule,
       currentPrice: livePrice,
@@ -707,7 +989,10 @@ export async function listStopLossRulesWithLiveState() {
       effectiveSlippageLimit: effectiveRisk.slippageLimit,
       effectiveMaxSpread: effectiveRisk.disableMaxSpread ? null : effectiveRisk.maxSpread,
       effectiveDisableMaxSpread: effectiveRisk.disableMaxSpread,
-      effectiveRiskLabel: effectiveRisk.label
+      effectiveRiskLabel: effectiveRisk.label,
+      emergencyStopEnabled: rule.aggressivePnLProtection,
+      emergencyBreakoutEnabled: rule.aggressiveBreakout,
+      emergencyMetrics
     };
   }));
 }

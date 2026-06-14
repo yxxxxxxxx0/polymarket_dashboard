@@ -49,7 +49,7 @@ export function StrategySequenceBuilder({ profile, marketId, conditionId, tokenI
   const [buySlippage, setBuySlippage] = useState("0.01");
   const [maxSpread, setMaxSpread] = useState("0.03");
   const [disableBreakoutMaxSpread, setDisableBreakoutMaxSpread] = useState(false);
-  const [aggressiveBreakout, setAggressiveBreakout] = useState(false);
+  const [aggressiveBreakout, setAggressiveBreakout] = useState(true);
   const [activationCondition, setActivationCondition] = useState<"FULL_FILL_ONLY" | "PARTIAL_FILL_ALLOWED" | "MIN_FILLED_SHARES">("FULL_FILL_ONLY");
   const [minFilledShares, setMinFilledShares] = useState("1");
   const [cancelAfterSeconds, setCancelAfterSeconds] = useState("60");
@@ -60,7 +60,7 @@ export function StrategySequenceBuilder({ profile, marketId, conditionId, tokenI
   const [stopSlippage, setStopSlippage] = useState("0.01");
   const [stopMaxSpread, setStopMaxSpread] = useState("0.10");
   const [disableStopMaxSpread, setDisableStopMaxSpread] = useState(false);
-  const [aggressiveStopProtection, setAggressiveStopProtection] = useState(false);
+  const [aggressiveStopProtection, setAggressiveStopProtection] = useState(true);
   const [trailEnabled, setTrailEnabled] = useState(true);
   const [trailPercentage, setTrailPercentage] = useState("10");
   const [trailActivationPrice, setTrailActivationPrice] = useState("");
@@ -244,7 +244,10 @@ export function StrategySequenceBuilder({ profile, marketId, conditionId, tokenI
               )}
               <Field label="Cancel if not filled after seconds"><input className="control w-full" value={cancelAfterSeconds} onChange={(event) => setCancelAfterSeconds(event.target.value)} /></Field>
               <div className="rounded border border-line bg-panel p-3 text-xs sm:col-span-2">
-                <div className="mb-2 font-semibold">Aggressive Breakout Buy</div>
+                <label className="mb-2 flex items-center gap-2 font-semibold">
+                  <input type="checkbox" checked={aggressiveBreakout} onChange={(event) => setAggressiveBreakout(event.target.checked)} />
+                  Enable emergency breakout buy
+                </label>
                 <div className="whitespace-pre-line leading-5 text-slate-600">{`Suggested football breakout-buy settings:
 
 0'-75':  slippage 4c,  max spread 6c
@@ -253,6 +256,11 @@ export function StrategySequenceBuilder({ profile, marketId, conditionId, tokenI
 90'+:    slippage 25c, max spread 35c
 
 Purpose: chase enough to get filled when asks jump during football breakouts.`}</div>
+                <div className="mt-2 whitespace-pre-line font-mono leading-5 text-slate-600">{`Emergency stress model:
+0'-75':  pre-trigger 1.5c below, slippage 8c,  max spread 12c
+75'-88': pre-trigger 2.5c below, slippage 12c, max spread 18c
+88'+:    pre-trigger 4c below,   slippage 22c, max spread 35c
+90'+:    pre-trigger 4c below,   slippage 30c, max spread disabled`}</div>
                 <button className="secondary-button mt-3 w-full" onClick={applyGameTimeBreakoutSettings} disabled={!gameTimeConfigured} type="button">Apply Game-Time Breakout Settings</button>
                 <div className="mt-2 text-[11px] font-semibold text-slate-500">{gameTimeConfigured ? `Minute ${gameMinute}' preset: ${breakoutPreset.label}` : "Set kickoff time in Game Time first."}</div>
               </div>
@@ -281,7 +289,10 @@ Purpose: chase enough to get filled when asks jump during football breakouts.`}<
                 <input type="checkbox" checked={disableStopMaxSpread} onChange={(event) => setDisableStopMaxSpread(event.target.checked)} disabled={!stopEnabled} /> Disable max spread
               </label>
               <div className="rounded border border-line bg-panel p-3 text-xs sm:col-span-2">
-                <div className="mb-2 font-semibold">Aggressive PnL Protection</div>
+                <label className="mb-2 flex items-center gap-2 font-semibold">
+                  <input type="checkbox" checked={aggressiveStopProtection} onChange={(event) => setAggressiveStopProtection(event.target.checked)} disabled={!stopEnabled} />
+                  Enable emergency stop loss
+                </label>
                 <div className="whitespace-pre-line leading-5 text-slate-600">{`Suggested football stop-loss settings:
 
 0'-75':  slippage 5c,  max spread 8c
@@ -290,6 +301,11 @@ Purpose: chase enough to get filled when asks jump during football breakouts.`}<
 90'+:    slippage 30c, max spread disabled or 40c
 
 Purpose: sell aggressively enough to escape when bids disappear during football gaps.`}</div>
+                <div className="mt-2 whitespace-pre-line font-mono leading-5 text-slate-600">{`Emergency stress model:
+0'-75':  slippage 8c,  max spread 12c
+75'-88': slippage 12c, max spread 18c
+88'+:    slippage 22c, max spread 35c
+90'+:    slippage 30c, max spread disabled / 45c fallback`}</div>
                 <button className="secondary-button mt-3 w-full" onClick={applyGameTimeStopSettings} disabled={!stopEnabled || !gameTimeConfigured} type="button">Apply Game-Time Stop Settings</button>
                 <div className="mt-2 text-[11px] font-semibold text-slate-500">{gameTimeConfigured ? `Minute ${gameMinute}' preset: ${stopPreset.label}` : "Set kickoff time in Game Time first."}</div>
               </div>

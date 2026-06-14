@@ -21,6 +21,7 @@ import {
   type StopLossTrigger
 } from "@/lib/stopLossMath";
 import { getAggressiveBreakoutSettings, getAggressiveStopProtectionSettings } from "@/lib/gameTime";
+import { clamp, computeEmergencyScore, getEmergencyParams } from "@/lib/emergencyExecutionModel";
 
 export type RuleMode = "STOP_LOSS" | "TRAILING_STOP" | "BREAKOUT_BUY";
 
@@ -57,6 +58,36 @@ function ModeButton({ active, icon: Icon, label, onClick }: {
       {label}
     </button>
   );
+}
+
+type EmergencyHistoryPoint = {
+  timestamp: number;
+  mid: number;
+  spread: number;
+  bidDepthNear: number;
+  askDepthNear: number;
+};
+
+function nearDepth(levels: Array<{ price: number; size: number }>, bestPrice: number | null, side: "bid" | "ask") {
+  if (bestPrice === null) return 0;
+  return levels
+    .filter((level) => side === "bid"
+      ? level.price <= bestPrice && level.price >= bestPrice - 0.03
+      : level.price >= bestPrice && level.price <= bestPrice + 0.03)
+    .reduce((sum, level) => sum + level.size, 0);
+}
+
+function snapshotAgo(history: EmergencyHistoryPoint[], secondsAgo: number) {
+  if (history.length === 0) return null;
+  const target = Date.now() - secondsAgo * 1_000;
+  return history.reduce((best, item) => (
+    Math.abs(item.timestamp - target) < Math.abs(best.timestamp - target) ? item : best
+  ), history[0]);
+}
+
+function formatCents(value: number | null | undefined) {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "-";
+  return `${Math.round(value * 100)}c`;
 }
 
 export function StopLossForm({ profile, marketId, conditionId, tokenId, outcomeName, initialMode = "STOP_LOSS", gameMinute = 0, gameTimeConfigured = false, onClose, onSaved }: {
@@ -100,17 +131,36 @@ export function StopLossForm({ profile, marketId, conditionId, tokenId, outcomeN
   const [priceSlopeThreshold, setPriceSlopeThreshold] = useState("0");
   const [maxSpread, setMaxSpread] = useState("0.03");
   const [disableMaxSpread, setDisableMaxSpread] = useState(false);
-  const [aggressivePnLProtection, setAggressivePnLProtection] = useState(false);
-  const [aggressiveBreakout, setAggressiveBreakout] = useState(false);
+  const [aggressivePnLProtection, setAggressivePnLProtection] = useState(true);
+  const [aggressiveBreakout, setAggressiveBreakout] = useState(true);
   const [message, setMessage] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [lastEdited, setLastEdited] = useState<"stopPrice" | "stopPercentage" | "trailingStopPrice" | "trailingPercentage" | "buyTriggerPrice" | "breakoutPercentage">("stopPercentage");
+  const [emergencyHistory, setEmergencyHistory] = useState<EmergencyHistoryPoint[]>([]);
 
-  const livePrice = referencePriceForTrigger(useOrderBook(tokenId), triggerType);
+  const book = useOrderBook(tokenId);
+  const livePrice = referencePriceForTrigger(book, triggerType);
 
   useEffect(() => {
     if (livePrice !== null) setCurrentPrice(formatPrice(livePrice));
   }, [livePrice]);
+
+  useEffect(() => {
+    if (!book) return;
+    const mid = book.midpoint ?? (book.bestBid !== null && book.bestAsk !== null ? (book.bestBid + book.bestAsk) / 2 : null);
+    const spread = book.spread ?? (book.bestBid !== null && book.bestAsk !== null ? book.bestAsk - book.bestBid : null);
+    if (mid === null || spread === null || !Number.isFinite(mid) || !Number.isFinite(spread)) return;
+    const point = {
+      timestamp: Date.now(),
+      mid,
+      spread,
+      bidDepthNear: nearDepth(book.bids, book.bestBid, "bid"),
+      askDepthNear: nearDepth(book.asks, book.bestAsk, "ask")
+    };
+    setEmergencyHistory((history) => [...history, point]
+      .filter((item) => Date.now() - item.timestamp <= 30_000)
+      .slice(-300));
+  }, [book?.lastUpdateTime, book?.bestBid, book?.bestAsk, book?.spread, book?.midpoint]);
 
   useEffect(() => {
     if (livePrice !== null && !referencePrice) {
@@ -205,6 +255,39 @@ export function StopLossForm({ profile, marketId, conditionId, tokenId, outcomeN
   const profitLocked = isProfitLocked(Number(entryPrice), Number(stopPrice));
   const stopPreset = getAggressiveStopProtectionSettings(gameMinute);
   const breakoutPreset = getAggressiveBreakoutSettings(gameMinute);
+  const emergencyParams = getEmergencyParams(gameMinute);
+  const emergencySide = mode === "BREAKOUT_BUY" ? "ask" : "bid";
+  const emergencyMetrics = useMemo(() => {
+    const current = emergencyHistory[emergencyHistory.length - 1];
+    if (!current) return null;
+    const fiveSecondsAgo = snapshotAgo(emergencyHistory, 5) ?? current;
+    const tenSecondsAgo = snapshotAgo(emergencyHistory, 10) ?? fiveSecondsAgo;
+    const nearDepthNow = emergencySide === "ask" ? current.askDepthNear : current.bidDepthNear;
+    const depthSamples = emergencyHistory.map((item) => emergencySide === "ask" ? item.askDepthNear : item.bidDepthNear);
+    const normalNearDepth = depthSamples.length > 0
+      ? depthSamples.reduce((sum, depth) => sum + depth, 0) / depthSamples.length
+      : nearDepthNow;
+    const score = computeEmergencyScore({
+      midNow: current.mid,
+      mid5sAgo: fiveSecondsAgo.mid,
+      mid10sAgo: tenSecondsAgo.mid,
+      spread: current.spread,
+      nearDepthNow,
+      normalNearDepth: normalNearDepth || nearDepthNow || 1e-9,
+      gameMinute
+    });
+    return {
+      score,
+      spread: current.spread,
+      priceMove5s: current.mid - fiveSecondsAgo.mid,
+      priceMove10s: current.mid - tenSecondsAgo.mid,
+      nearDepthNow,
+      normalNearDepth,
+      depthVacuumScore: clamp(1 - nearDepthNow / Math.max(normalNearDepth || nearDepthNow || 1e-9, 1e-9), 0, 1)
+    };
+  }, [emergencyHistory, emergencySide, gameMinute]);
+  const emergencyStopRows = "0'-75':  slippage 8c,  max spread 12c\n75'-88': slippage 12c, max spread 18c\n88'+:    slippage 22c, max spread 35c\n90'+:    slippage 30c, max spread disabled / 45c fallback";
+  const emergencyBreakoutRows = "0'-75':  pre-trigger 1.5c below, slippage 8c,  max spread 12c\n75'-88': pre-trigger 2.5c below, slippage 12c, max spread 18c\n88'+:    pre-trigger 4c below,   slippage 22c, max spread 35c\n90'+:    pre-trigger 4c below,   slippage 30c, max spread disabled";
 
   function applyGameTimeStopSettings() {
     if (!gameTimeConfigured) {
@@ -276,6 +359,8 @@ export function StopLossForm({ profile, marketId, conditionId, tokenId, outcomeN
         disableMaxSpread,
         aggressivePnLProtection: mode !== "BREAKOUT_BUY" ? aggressivePnLProtection : false,
         aggressiveBreakout: mode === "BREAKOUT_BUY" ? aggressiveBreakout : false,
+        emergencyStopEnabled: mode !== "BREAKOUT_BUY" ? aggressivePnLProtection : false,
+        emergencyBreakoutEnabled: mode === "BREAKOUT_BUY" ? aggressiveBreakout : false,
         breakevenEnabled: mode === "TRAILING_STOP" ? breakevenEnabled : false,
         breakevenTriggerPrice: mode === "TRAILING_STOP" && breakevenTriggerPrice ? breakevenTriggerPrice : undefined,
         breakevenBuffer: mode === "TRAILING_STOP" ? breakevenBuffer : undefined,
@@ -375,6 +460,23 @@ Purpose: sell aggressively enough to escape when bids disappear during football 
                 </button>
                 <div className="mt-2 text-[11px] font-semibold text-slate-500">{gameTimeConfigured ? `Minute ${gameMinute}' preset: ${stopPreset.label}` : "Set kickoff time in Game Time first."}</div>
               </div>
+              <div className="rounded-md border border-line bg-panel p-3 text-xs sm:col-span-2">
+                <label className="flex items-center gap-2 font-semibold text-slate-800">
+                  <input type="checkbox" checked={aggressivePnLProtection} onChange={(event) => setAggressivePnLProtection(event.target.checked)} />
+                  Enable emergency stop loss
+                </label>
+                <div className="mt-2 whitespace-pre-line font-mono leading-5 text-slate-600">{emergencyStopRows}</div>
+                <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                  <div className="rounded border border-line bg-white p-2">Auto slippage<br /><span className="font-mono font-semibold">{formatCents(emergencyParams.slippage)}</span></div>
+                  <div className="rounded border border-line bg-white p-2">Max spread<br /><span className="font-mono font-semibold">{emergencyParams.maxSpread === null ? "disabled / 45c fallback" : formatCents(emergencyParams.maxSpread)}</span></div>
+                  <div className="rounded border border-line bg-white p-2">Score threshold<br /><span className="font-mono font-semibold">{emergencyParams.emergencyScoreStop.toFixed(2)}</span></div>
+                </div>
+                <div className="mt-2 rounded border border-line bg-white p-2 font-mono leading-5 text-slate-600">
+                  Emergency score: {emergencyMetrics ? emergencyMetrics.score.toFixed(2) : "-"}<br />
+                  Spread: {emergencyMetrics ? formatCents(emergencyMetrics.spread) : "-"} · 5s move: {emergencyMetrics ? formatCents(emergencyMetrics.priceMove5s) : "-"} · 10s move: {emergencyMetrics ? formatCents(emergencyMetrics.priceMove10s) : "-"}<br />
+                  Near bid depth: {emergencyMetrics ? emergencyMetrics.nearDepthNow.toFixed(2) : "-"} · Normal: {emergencyMetrics ? emergencyMetrics.normalNearDepth.toFixed(2) : "-"} · Vacuum: {emergencyMetrics ? emergencyMetrics.depthVacuumScore.toFixed(2) : "-"}
+                </div>
+              </div>
               <label className="flex items-center gap-2 rounded-md border border-line bg-panel p-2 text-xs font-semibold text-slate-700">
                 <input type="checkbox" checked={softStopEnabled} onChange={(event) => setSoftStopEnabled(event.target.checked)} />
                 Soft OFI stop
@@ -409,6 +511,23 @@ Purpose: chase enough to get filled when asks jump during football breakouts.`}<
                   Apply Game-Time Breakout Settings
                 </button>
                 <div className="mt-2 text-[11px] font-semibold text-slate-500">{gameTimeConfigured ? `Minute ${gameMinute}' preset: ${breakoutPreset.label}` : "Set kickoff time in Game Time first."}</div>
+              </div>
+              <div className="rounded-md border border-line bg-panel p-3 text-xs sm:col-span-2">
+                <label className="flex items-center gap-2 font-semibold text-slate-800">
+                  <input type="checkbox" checked={aggressiveBreakout} onChange={(event) => setAggressiveBreakout(event.target.checked)} />
+                  Enable emergency breakout buy
+                </label>
+                <div className="mt-2 whitespace-pre-line font-mono leading-5 text-slate-600">{emergencyBreakoutRows}</div>
+                <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                  <div className="rounded border border-line bg-white p-2">Auto slippage<br /><span className="font-mono font-semibold">{formatCents(emergencyParams.slippage)}</span></div>
+                  <div className="rounded border border-line bg-white p-2">Max spread<br /><span className="font-mono font-semibold">{emergencyParams.maxSpread === null ? "disabled" : formatCents(emergencyParams.maxSpread)}</span></div>
+                  <div className="rounded border border-line bg-white p-2">Score threshold<br /><span className="font-mono font-semibold">{emergencyParams.emergencyScoreBreakout.toFixed(2)}</span></div>
+                </div>
+                <div className="mt-2 rounded border border-line bg-white p-2 font-mono leading-5 text-slate-600">
+                  Emergency score: {emergencyMetrics ? emergencyMetrics.score.toFixed(2) : "-"}<br />
+                  Spread: {emergencyMetrics ? formatCents(emergencyMetrics.spread) : "-"} · 5s move: {emergencyMetrics ? formatCents(emergencyMetrics.priceMove5s) : "-"} · 10s move: {emergencyMetrics ? formatCents(emergencyMetrics.priceMove10s) : "-"}<br />
+                  Near ask depth: {emergencyMetrics ? emergencyMetrics.nearDepthNow.toFixed(2) : "-"} · Normal: {emergencyMetrics ? emergencyMetrics.normalNearDepth.toFixed(2) : "-"} · Vacuum: {emergencyMetrics ? emergencyMetrics.depthVacuumScore.toFixed(2) : "-"}
+                </div>
               </div>
               <Field label="Stake amount" help="USD amount to use when the breakout triggers.">
                 <input className="control w-full" value={stakeAmount} onChange={(event) => setStakeAmount(event.target.value)} />
