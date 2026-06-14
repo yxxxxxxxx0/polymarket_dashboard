@@ -11,7 +11,7 @@ import {
 import { prisma } from "../lib/prisma.js";
 import { assertConfiguredToken, marketScope, outcomeForToken } from "./singleMarketService.js";
 import { invalidateStopLossRuleCache } from "./stopLossService.js";
-import { getLiveOpenOrders } from "./clobService.js";
+import { getLiveOpenOrders, getLiveOrder, getLiveTrades } from "./clobService.js";
 import { cancelOrder } from "./tradingService.js";
 import { getAppSettings } from "./settingsService.js";
 
@@ -322,6 +322,18 @@ export async function markRuleTerminal(ruleId: string, status: TerminalRuleStatu
 export async function recordBreakoutFill(ruleId: string, fill: FillActivationInput) {
   const parent = await prisma.stopLossRule.findUnique({ where: { id: ruleId }, include: { childRules: true } });
   if (!parent) return null;
+  if (parent.orderId) {
+    const remainingSize = fill.expectedShareAmount === undefined
+      ? undefined
+      : Math.max(0, fill.expectedShareAmount - fill.filledShareAmount);
+    await prisma.openOrder.updateMany({
+      where: { OR: [{ id: parent.orderId }, { exchangeOrderId: parent.orderId }] },
+      data: {
+        ...(remainingSize === undefined ? {} : { remainingSize }),
+        status: fill.fullFill ? "FILLED" : "PARTIALLY_FILLED"
+      }
+    }).catch(() => undefined);
+  }
   if (!shouldActivateChildren(parent, fill)) {
     const updated = await prisma.stopLossRule.update({
       where: { id: parent.id },
@@ -380,7 +392,68 @@ function fillFromLiveOrder(order: Record<string, unknown>): FillActivationInput 
   return null;
 }
 
-async function reconcileSubmittedParent(rule: StopLossRule, liveOrdersById: Map<string, Record<string, unknown>>) {
+function orderIdInTrade(trade: Record<string, unknown>, orderId: string) {
+  if (String(trade.taker_order_id ?? trade.order_id ?? trade.orderID ?? trade.id ?? "") === orderId) return true;
+  const makerOrders = Array.isArray(trade.maker_orders) ? trade.maker_orders : [];
+  return makerOrders.some((makerOrder) => (
+    typeof makerOrder === "object"
+    && makerOrder !== null
+    && String((makerOrder as Record<string, unknown>).order_id ?? (makerOrder as Record<string, unknown>).orderID ?? "") === orderId
+  ));
+}
+
+export function fillFromLiveTrades(orderId: string, trades: Record<string, unknown>[], expectedShareAmount?: number): FillActivationInput | null {
+  let filledShareAmount = 0;
+  let notional = 0;
+  const matchedTrades: Record<string, unknown>[] = [];
+
+  for (const trade of trades) {
+    if (!orderIdInTrade(trade, orderId)) continue;
+    const status = String(trade.status ?? "").toUpperCase();
+    if (status === "FAILED" || status === "CANCELLED" || status === "REJECTED") continue;
+    const tradePrice = Number(trade.price ?? 0);
+    const makerOrders = Array.isArray(trade.maker_orders) ? trade.maker_orders : [];
+    const matchingMakerOrders = makerOrders.filter((makerOrder) => (
+      typeof makerOrder === "object"
+      && makerOrder !== null
+      && String((makerOrder as Record<string, unknown>).order_id ?? (makerOrder as Record<string, unknown>).orderID ?? "") === orderId
+    )) as Array<Record<string, unknown>>;
+
+    if (matchingMakerOrders.length > 0) {
+      for (const makerOrder of matchingMakerOrders) {
+        const amount = Number(makerOrder.matched_amount ?? makerOrder.size_matched ?? 0);
+        const price = Number(makerOrder.price ?? tradePrice);
+        if (amount > 0 && price > 0) {
+          filledShareAmount += amount;
+          notional += amount * price;
+          matchedTrades.push(trade);
+        }
+      }
+      continue;
+    }
+
+    if (String(trade.taker_order_id ?? "") === orderId) {
+      const amount = Number(trade.size ?? trade.matched_size ?? trade.size_matched ?? 0);
+      if (amount > 0 && tradePrice > 0) {
+        filledShareAmount += amount;
+        notional += amount * tradePrice;
+        matchedTrades.push(trade);
+      }
+    }
+  }
+
+  if (filledShareAmount <= 0 || notional <= 0) return null;
+  const averageFillPrice = notional / filledShareAmount;
+  return {
+    filledShareAmount,
+    averageFillPrice,
+    expectedShareAmount,
+    fullFill: expectedShareAmount === undefined ? false : filledShareAmount + FULL_FILL_EPSILON >= expectedShareAmount,
+    rawResponse: matchedTrades
+  };
+}
+
+async function reconcileSubmittedParent(rule: StopLossRule, liveOrdersById: Map<string, Record<string, unknown>>, liveTrades: Record<string, unknown>[]) {
   if (!rule.orderId) return null;
   const paperOrder = await prisma.openOrder.findFirst({ where: { OR: [{ id: rule.orderId }, { exchangeOrderId: rule.orderId }] } });
   if (paperOrder) {
@@ -394,6 +467,15 @@ async function reconcileSubmittedParent(rule: StopLossRule, liveOrdersById: Map<
     if (fill?.fullFill) return recordBreakoutFill(rule.id, fill);
     if (fill && fill.filledShareAmount > 0) return recordBreakoutFill(rule.id, fill);
   }
+  const liveOrderDetails = await getLiveOrder(rule.orderId).catch(() => null) as Record<string, unknown> | null;
+  if (liveOrderDetails) {
+    const fill = fillFromLiveOrder(liveOrderDetails);
+    if (fill?.fullFill) return recordBreakoutFill(rule.id, fill);
+    if (fill && fill.filledShareAmount > 0) return recordBreakoutFill(rule.id, fill);
+  }
+  const tradeFill = fillFromLiveTrades(rule.orderId, liveTrades, paperOrder?.size);
+  if (tradeFill?.fullFill) return recordBreakoutFill(rule.id, tradeFill);
+  if (tradeFill && tradeFill.filledShareAmount > 0) return recordBreakoutFill(rule.id, tradeFill);
   if (rule.cancelAfterSeconds && rule.triggeredAt) {
     const submittedMs = rule.triggeredAt.getTime();
     if (Date.now() - submittedMs >= rule.cancelAfterSeconds * 1000) {
@@ -465,7 +547,7 @@ function sequenceTimeline(rules: Array<StopLossRule>) {
 }
 
 export async function reconcileStrategySequences() {
-  const { marketId } = marketScope();
+  const { marketId, conditionId } = marketScope();
   const parents = await prisma.stopLossRule.findMany({
     where: {
       marketId,
@@ -487,13 +569,23 @@ export async function reconcileStrategySequences() {
   } catch {
     liveOrdersById = new Map();
   }
+  let liveTrades: Record<string, unknown>[] = [];
+  try {
+    const tokenIds = [...new Set(parents.map((parent) => parent.tokenId).filter(Boolean))];
+    const tradeBatches = tokenIds.length > 0
+      ? await Promise.all(tokenIds.map((tokenId) => getLiveTrades({ asset_id: tokenId }).catch(() => [])))
+      : [await getLiveTrades(conditionId ? { market: conditionId } : undefined).catch(() => [])];
+    liveTrades = tradeBatches.flat().map((trade) => trade as unknown as Record<string, unknown>);
+  } catch {
+    liveTrades = [];
+  }
   const results = [];
   for (const parent of parents) {
     if (parent.status === StopLossStatus.FILLED && parent.filledShareAmount && parent.averageFillPrice) {
       results.push(await recordBreakoutFill(parent.id, { filledShareAmount: parent.filledShareAmount, averageFillPrice: parent.averageFillPrice, fullFill: true }));
       continue;
     }
-    results.push(await reconcileSubmittedParent(parent, liveOrdersById));
+    results.push(await reconcileSubmittedParent(parent, liveOrdersById, liveTrades));
   }
   return results.filter(Boolean);
 }

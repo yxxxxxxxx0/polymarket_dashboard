@@ -204,7 +204,12 @@ export async function getLiveOpenOrders() {
   return client.getOpenOrders();
 }
 
-export async function getLiveTrades() {
+export async function getLiveOrder(orderId: string) {
   const client = await getTradingClobClient();
-  return client.getTrades();
+  return client.getOrder(orderId);
+}
+
+export async function getLiveTrades(params?: { id?: string; maker_address?: string; market?: string; asset_id?: string; before?: string; after?: string }) {
+  const client = await getTradingClobClient();
+  return client.getTrades(params);
 }

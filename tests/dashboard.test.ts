@@ -24,7 +24,7 @@ import {
 } from "../apps/server/src/services/ofiLogic";
 import { evaluateStopLossConfirmation } from "../apps/server/src/services/stopLossDecision";
 import { assertLiveOrderAccepted } from "../apps/server/src/services/clobService";
-import { childActivationUpdate, isFullFill, ruleStatusForDisplay, shouldActivateChildren } from "../apps/server/src/services/strategySequenceService";
+import { childActivationUpdate, fillFromLiveTrades, isFullFill, ruleStatusForDisplay, shouldActivateChildren } from "../apps/server/src/services/strategySequenceService";
 import { executionPrice, marketableBuyPrice, resolveEffectiveRiskSettings } from "../apps/server/src/services/stopLossService";
 import { computeEmergencyScore, emergencyBuyLimit, emergencySellLimit, estimateEmergencyGap, getEmergencyParams, shouldEmergencyBreakoutBuy, shouldEmergencyStopLoss } from "../apps/server/src/services/emergencyExecutionModel";
 import { estimateGapByGameMinute, getAggressiveBreakoutSettings, getAggressiveStopProtectionSettings, getGameMinute } from "../apps/web/src/lib/gameTime";
@@ -328,6 +328,27 @@ assert.equal(shouldActivateChildren({ activationCondition: "FULL_FILL_ONLY", min
 assert.equal(shouldActivateChildren({ activationCondition: "PARTIAL_FILL_ALLOWED", minFilledShares: null }, { filledShareAmount: 12, averageFillPrice: 0.62, expectedShareAmount: 25 }), true);
 assert.equal(shouldActivateChildren({ activationCondition: "MIN_FILLED_SHARES", minFilledShares: 15 }, { filledShareAmount: 12, averageFillPrice: 0.62, expectedShareAmount: 25 }), false);
 assert.equal(shouldActivateChildren({ activationCondition: "MIN_FILLED_SHARES", minFilledShares: 15 }, { filledShareAmount: 15, averageFillPrice: 0.62, expectedShareAmount: 25 }), true);
+const makerTradeFill = fillFromLiveTrades("0xparent", [{
+  id: "trade-1",
+  taker_order_id: "0xtaker",
+  price: "0.62",
+  size: "10",
+  status: "MATCHED",
+  maker_orders: [{ order_id: "0xparent", matched_amount: "10", price: "0.62" }]
+}], 10);
+assert.equal(makerTradeFill?.filledShareAmount, 10);
+assert.equal(makerTradeFill?.averageFillPrice, 0.62);
+assert.equal(makerTradeFill?.fullFill, true);
+const takerTradeFill = fillFromLiveTrades("0xparent", [{
+  id: "trade-2",
+  taker_order_id: "0xparent",
+  price: "0.64",
+  size: "4",
+  status: "MATCHED",
+  maker_orders: []
+}], 10);
+assert.equal(takerTradeFill?.filledShareAmount, 4);
+assert.equal(takerTradeFill?.fullFill, false);
 
 const submittedParentStatus = ruleStatusForDisplay(StopLossStatus.ORDER_SUBMITTED);
 assert.equal(submittedParentStatus, "order_submitted");
