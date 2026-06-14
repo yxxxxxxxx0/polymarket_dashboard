@@ -93,11 +93,11 @@ export function OrderBookPanel({ tokenId }: { tokenId: string }) {
           <div className="font-mono text-sm font-semibold">{fmt(book?.ofi?.rawOfi, 2)}</div>
         </div>
         <div className="bg-white p-3">
-          <div className="text-xs text-slate-500">OFI 30s</div>
+          <div className="text-xs text-slate-500">OFI 10m</div>
           <div className="font-mono text-sm font-semibold">{fmt(book?.ofi?.rollingOfi30s, 2)}</div>
         </div>
         <div className="bg-white p-3">
-          <div className="text-xs text-slate-500">Signal 30s</div>
+          <div className="text-xs text-slate-500">Signal 10m</div>
           <div className={`text-sm font-semibold ${signal30s.includes("Buy") ? "text-buy" : signal30s.includes("Sell") ? "text-sell" : "text-slate-700"}`}>
             {signal30s}
           </div>

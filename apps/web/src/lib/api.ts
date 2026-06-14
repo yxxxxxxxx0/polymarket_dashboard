@@ -7,6 +7,7 @@ function positiveEnvNumber(value: string | undefined, fallback: number) {
 
 const API_TIMEOUT_MS = positiveEnvNumber(process.env.NEXT_PUBLIC_API_TIMEOUT_MS, 10_000);
 export const UI_REFRESH_MS = positiveEnvNumber(process.env.NEXT_PUBLIC_UI_REFRESH_MS, 10_000);
+export const ORDERBOOK_POLL_MS = positiveEnvNumber(process.env.NEXT_PUBLIC_ORDERBOOK_POLL_MS, 1_000);
 export const DEFAULT_MARKET_PROFILE = "football";
 
 export function profileFromPath(pathname: string | null | undefined) {
@@ -67,6 +68,37 @@ export type GameTimeSetting = {
   gameMinute: number;
   status: "Waiting for kickoff" | "Live" | "Finished" | string;
   estimatedGap: number;
+  paused?: boolean;
+  pausedGameMinute?: number | null;
+  phase?: "FIRST_HALF" | "HALF_TIME" | "SECOND_HALF";
+  secondHalfStartedAtIso?: string | null;
+};
+
+export type GapModelTier = {
+  startMinute: number;
+  label: string;
+  slippageCents: number;
+  maxSpreadCents: number;
+  disableMaxSpread: boolean;
+  lateAddCents: number;
+};
+
+export type DirectionalGapModel = {
+  minSlippageCents: number;
+  maxSlippageCents: number;
+  spreadCoefficient: number;
+  moveCoefficient: number;
+  thinDepthThresholdShares: number;
+  thinDepthAddCents: number;
+  extremePriceLow: number;
+  extremePriceHigh: number;
+  extremePriceAddCents: number;
+  tiers: GapModelTier[];
+};
+
+export type GapModelConfig = {
+  breakout: DirectionalGapModel;
+  stopLoss: DirectionalGapModel;
 };
 
 export type OrderBook = {

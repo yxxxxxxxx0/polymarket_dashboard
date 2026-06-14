@@ -17,16 +17,18 @@ import { assertConfiguredToken, marketScope, outcomeForToken } from "./singleMar
 import { evaluateStopLossConfirmation } from "./stopLossDecision.js";
 import { cancelMarketOrders, placeOrder } from "./tradingService.js";
 import { handleSequenceExitFilled, markRuleOrderSubmitted, markRuleTerminal, reconcileStrategySequences, ruleStatusForDisplay } from "./strategySequenceService.js";
-import { getAggressiveBreakoutSettings, getAggressiveStopProtectionSettings, getMarketGameTime } from "./gameTimeService.js";
+import { DEFAULT_GAP_MODEL_CONFIG, getGapModelConfig, getMarketGameTime, tierForGameMinute, type GapModelConfig } from "./gameTimeService.js";
 
 const confirmationTicks = new Map<string, number>();
 const recentPrices = new Map<string, Array<{ timestamp: number; price: number }>>();
+const midpointHistory = new Map<string, Array<{ timestamp: number; midpoint: number }>>();
 const tokenEvaluationQueues = new Map<string, { running: boolean; pending: OrderBook | null }>();
 const tokenExecutionLocks = new Set<string>();
 let enabledRulesCache: { marketId: string; expiresAt: number; rules: StopLossRule[] } | null = null;
 let subscribedToOrderBookUpdates = false;
 let cachedTradeMode: { value: TradeMode; expiresAt: number } | null = null;
 const gameMinuteCache = new Map<string, { expiresAt: number; gameMinute: number | null }>();
+let gapModelCache: { expiresAt: number; value: GapModelConfig } | null = null;
 
 function referencePrice(book: OrderBook, triggerType: StopLossTriggerType): number | null {
   switch (triggerType) {
@@ -80,7 +82,59 @@ async function currentGameMinute(marketId: string): Promise<number | null> {
   return gameMinute;
 }
 
-export function resolveEffectiveRiskSettings(rule: Pick<StopLossRule, "ruleType" | "slippageLimit" | "maxSpread" | "disableMaxSpread">, gameMinute: number | null) {
+async function currentGapModelConfig() {
+  const now = Date.now();
+  if (gapModelCache && gapModelCache.expiresAt > now) return gapModelCache.value;
+  const value = await getGapModelConfig();
+  gapModelCache = { expiresAt: now + 1_000, value };
+  return value;
+}
+
+function clip(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function depthWithinOneCent(book: OrderBook, side: "bid" | "ask") {
+  if (side === "ask") {
+    if (book.bestAsk === null) return 0;
+    return book.asks
+      .filter((level) => level.price >= Number(book.bestAsk) && level.price <= Number(book.bestAsk) + 0.01)
+      .reduce((sum, level) => sum + level.size, 0);
+  }
+  if (book.bestBid === null) return 0;
+  return book.bids
+    .filter((level) => level.price <= Number(book.bestBid) && level.price >= Number(book.bestBid) - 0.01)
+    .reduce((sum, level) => sum + level.size, 0);
+}
+
+function rememberMidpointMove(tokenId: string, book: OrderBook) {
+  const midpoint = book.midpoint ?? (
+    book.bestBid !== null && book.bestAsk !== null ? (book.bestBid + book.bestAsk) / 2 : null
+  );
+  if (midpoint === null || !Number.isFinite(midpoint)) return { upMove10Cents: 0, downMove10Cents: 0 };
+
+  const now = Date.now();
+  const next = [...(midpointHistory.get(tokenId) ?? []), { timestamp: now, midpoint }]
+    .filter((point) => now - point.timestamp <= 30_000)
+    .slice(-100);
+  midpointHistory.set(tokenId, next);
+
+  const target = now - 10_000;
+  const tenSecondsAgo = [...next].reverse().find((point) => point.timestamp <= target) ?? next[0];
+  const moveCents = (midpoint - tenSecondsAgo.midpoint) * 100;
+  return {
+    upMove10Cents: Math.max(0, moveCents),
+    downMove10Cents: Math.max(0, -moveCents)
+  };
+}
+
+export function resolveEffectiveRiskSettings(
+  rule: Pick<StopLossRule, "ruleType" | "slippageLimit" | "maxSpread" | "disableMaxSpread">,
+  gameMinute: number | null,
+  book?: OrderBook | null,
+  gapModel: GapModelConfig = DEFAULT_GAP_MODEL_CONFIG,
+  movement: { upMove10Cents?: number; downMove10Cents?: number } = {}
+) {
   if (gameMinute === null) {
     return {
       slippageLimit: rule.slippageLimit,
@@ -92,17 +146,37 @@ export function resolveEffectiveRiskSettings(rule: Pick<StopLossRule, "ruleType"
     };
   }
 
-  const preset = isBreakoutRule(rule.ruleType)
-    ? getAggressiveBreakoutSettings(gameMinute)
-    : getAggressiveStopProtectionSettings(gameMinute);
+  const breakout = isBreakoutRule(rule.ruleType);
+  const model = breakout ? gapModel.breakout : gapModel.stopLoss;
+  const tier = tierForGameMinute(model, gameMinute);
+  let slippageCents = tier.slippageCents;
+  if (book) {
+    const spreadCents = Math.max(0, Number(book.spread ?? 0) * 100);
+    const referencePrice = breakout ? book.bestAsk ?? book.midpoint : book.bestBid ?? book.midpoint;
+    const extremePriceAddCents = referencePrice !== null && (referencePrice < model.extremePriceLow || referencePrice > model.extremePriceHigh)
+      ? model.extremePriceAddCents
+      : 0;
+    const thinDepth = breakout ? depthWithinOneCent(book, "ask") : depthWithinOneCent(book, "bid");
+    const thinDepthAddCents = thinDepth < model.thinDepthThresholdShares ? model.thinDepthAddCents : 0;
+    const moveCents = breakout ? movement.upMove10Cents ?? 0 : movement.downMove10Cents ?? 0;
+    slippageCents = clip(
+      model.spreadCoefficient * spreadCents
+      + model.moveCoefficient * moveCents
+      + tier.lateAddCents
+      + thinDepthAddCents
+      + extremePriceAddCents,
+      model.minSlippageCents,
+      model.maxSlippageCents
+    );
+  }
 
   return {
-    slippageLimit: preset.slippageLimit,
-    maxSpread: preset.maxSpread,
-    disableMaxSpread: preset.disableMaxSpread,
+    slippageLimit: Number((slippageCents / 100).toFixed(4)),
+    maxSpread: Number((tier.maxSpreadCents / 100).toFixed(4)),
+    disableMaxSpread: tier.disableMaxSpread,
     gameMinute,
     dynamic: true,
-    label: preset.label
+    label: `${breakout ? "Breakout" : "Stop"} gap model: ${slippageCents.toFixed(1)}c slippage, ${tier.disableMaxSpread ? "max spread disabled" : `${tier.maxSpreadCents}c max spread`} (${tier.label})`
   };
 }
 
@@ -312,11 +386,13 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
 
   const book = await freshestOrderBook(rule.tokenId, bookOverride);
   const ref = referencePrice(book, rule.triggerType);
+  const movement = rememberMidpointMove(rule.tokenId, book);
   const priceSlope = rememberPrice(rule.tokenId, ref);
   const liveRule = await updateLiveRuleState(rule, book, ref);
   if (!liveRule) return null;
   const gameMinute = await currentGameMinute(liveRule.marketId);
-  const risk = resolveEffectiveRiskSettings(liveRule, gameMinute);
+  const gapModel = await currentGapModelConfig();
+  const risk = resolveEffectiveRiskSettings(liveRule, gameMinute, book, gapModel, movement);
 
   if (isBreakoutRule(liveRule.ruleType)) {
     const breakoutRef = referencePrice(book, liveRule.breakoutReferenceSource ?? liveRule.triggerType);
@@ -342,7 +418,8 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
     return withTokenExecutionLock(liveRule.tokenId, async () => {
       const executionBook = await freshestOrderBook(liveRule.tokenId, book);
       assertFreshEnoughForExecution(executionBook);
-      const executionRisk = resolveEffectiveRiskSettings(liveRule, await currentGameMinute(liveRule.marketId));
+      const executionMovement = rememberMidpointMove(liveRule.tokenId, executionBook);
+      const executionRisk = resolveEffectiveRiskSettings(liveRule, await currentGameMinute(liveRule.marketId), executionBook, await currentGapModelConfig(), executionMovement);
       const executionRef = referencePrice(executionBook, liveRule.breakoutReferenceSource ?? liveRule.triggerType);
       const executionSpread = executionBook.spread ?? (executionBook.bestAsk !== null && executionBook.bestBid !== null ? executionBook.bestAsk - executionBook.bestBid : null);
       const stillTriggered = executionRef !== null && executionRef >= breakoutPrice;
@@ -467,7 +544,8 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
     const executionRef = referencePrice(executionBook, liveRule.triggerType);
     const claimedRule = await claimRuleExecution(liveRule, executionRef);
     if (!claimedRule) return null;
-    const executionRisk = resolveEffectiveRiskSettings(claimedRule, await currentGameMinute(claimedRule.marketId));
+    const executionMovement = rememberMidpointMove(claimedRule.tokenId, executionBook);
+    const executionRisk = resolveEffectiveRiskSettings(claimedRule, await currentGameMinute(claimedRule.marketId), executionBook, await currentGapModelConfig(), executionMovement);
     const executionSpread = executionBook.spread ?? (executionBook.bestAsk !== null && executionBook.bestBid !== null ? executionBook.bestAsk - executionBook.bestBid : null);
     const executionSpreadOk = executionRisk.disableMaxSpread || executionRisk.maxSpread === null || executionRisk.maxSpread === undefined || (executionSpread !== null && executionSpread <= executionRisk.maxSpread);
 
@@ -615,7 +693,7 @@ export async function listStopLossRulesWithLiveState() {
     const activeStopPrice = rule.stopPrice;
     const distanceToStop = livePrice === null ? null : livePrice - activeStopPrice;
     const distanceToTrigger = livePrice === null ? null : activeStopPrice - livePrice;
-    const effectiveRisk = resolveEffectiveRiskSettings(rule, await currentGameMinute(rule.marketId));
+    const effectiveRisk = resolveEffectiveRiskSettings(rule, await currentGameMinute(rule.marketId), null, await currentGapModelConfig());
     return {
       ...rule,
       currentPrice: livePrice,

@@ -1,5 +1,25 @@
 export const GAME_TIMEZONE = "Asia/Hong_Kong";
 
+const DEFAULT_BREAKOUT_TIERS = [
+  { startMinute: 0, label: "0'-75': breakout slippage 4c, max spread 6c", slippageCents: 4, maxSpreadCents: 6, disableMaxSpread: false },
+  { startMinute: 75, label: "75'-88': breakout slippage 8c, max spread 12c", slippageCents: 8, maxSpreadCents: 12, disableMaxSpread: false },
+  { startMinute: 88, label: "88'-90': breakout slippage 15c, max spread 22c", slippageCents: 15, maxSpreadCents: 22, disableMaxSpread: false },
+  { startMinute: 90, label: "90'+: breakout slippage 25c, max spread 35c", slippageCents: 25, maxSpreadCents: 35, disableMaxSpread: false }
+];
+
+const DEFAULT_STOP_TIERS = [
+  { startMinute: 0, label: "0'-75': stop slippage 5c, max spread 8c", slippageCents: 5, maxSpreadCents: 8, disableMaxSpread: false },
+  { startMinute: 75, label: "75'-88': stop slippage 10c, max spread 15c", slippageCents: 10, maxSpreadCents: 15, disableMaxSpread: false },
+  { startMinute: 88, label: "88'-90': stop slippage 18c, max spread 28c", slippageCents: 18, maxSpreadCents: 28, disableMaxSpread: false },
+  { startMinute: 90, label: "90'+: stop slippage 30c, max spread disabled or 40c", slippageCents: 30, maxSpreadCents: 40, disableMaxSpread: true }
+];
+
+function tierForGameMinute<T extends { startMinute: number }>(tiers: T[], gameMinute: number): T {
+  return [...tiers].sort((a, b) => a.startMinute - b.startMinute).reduce((selected, tier) => (
+    gameMinute >= tier.startMinute ? tier : selected
+  ), tiers[0]);
+}
+
 export function estimateGapByGameMinute(gameMinute: number): number {
   const earlyGoalWindow = 0.11 * Math.exp(-Math.pow((gameMinute - 10) / 7, 2));
   const firstHalfRepriceWindow = 0.09 * Math.exp(-Math.pow((gameMinute - 32) / 6, 2));
@@ -8,29 +28,13 @@ export function estimateGapByGameMinute(gameMinute: number): number {
 }
 
 export function getAggressiveStopProtectionSettings(gameMinute: number) {
-  if (gameMinute >= 90) {
-    return { slippageLimit: 0.25, maxSpread: 0.40, disableMaxSpread: true, label: "90'+: slippage 25c, max spread disabled or 40c" };
-  }
-  if (gameMinute >= 88) {
-    return { slippageLimit: 0.20, maxSpread: 0.35, disableMaxSpread: false, label: "88'+: slippage 20c, max spread 35c" };
-  }
-  if (gameMinute >= 75) {
-    return { slippageLimit: 0.10, maxSpread: 0.15, disableMaxSpread: false, label: "75'-88': slippage 10c, max spread 15c" };
-  }
-  return { slippageLimit: 0.06, maxSpread: 0.10, disableMaxSpread: false, label: "0'-75': slippage 6c, max spread 10c" };
+  const tier = tierForGameMinute(DEFAULT_STOP_TIERS, gameMinute);
+  return { slippageLimit: tier.slippageCents / 100, maxSpread: tier.maxSpreadCents / 100, disableMaxSpread: tier.disableMaxSpread, label: tier.label };
 }
 
 export function getAggressiveBreakoutSettings(gameMinute: number) {
-  if (gameMinute >= 90) {
-    return { slippageLimit: 0.15, maxSpread: 0.30, disableMaxSpread: false, label: "90'+: breakout slippage 15c, max spread 30c" };
-  }
-  if (gameMinute >= 88) {
-    return { slippageLimit: 0.12, maxSpread: 0.25, disableMaxSpread: false, label: "88'+: breakout slippage 12c, max spread 25c" };
-  }
-  if (gameMinute >= 75) {
-    return { slippageLimit: 0.08, maxSpread: 0.15, disableMaxSpread: false, label: "75'-88': breakout slippage 8c, max spread 15c" };
-  }
-  return { slippageLimit: 0.06, maxSpread: 0.10, disableMaxSpread: false, label: "0'-75': breakout slippage 6c, max spread 10c" };
+  const tier = tierForGameMinute(DEFAULT_BREAKOUT_TIERS, gameMinute);
+  return { slippageLimit: tier.slippageCents / 100, maxSpread: tier.maxSpreadCents / 100, disableMaxSpread: tier.disableMaxSpread, label: tier.label };
 }
 
 export function getGameMinute(kickoffTimeIso: string, now = new Date()): number {

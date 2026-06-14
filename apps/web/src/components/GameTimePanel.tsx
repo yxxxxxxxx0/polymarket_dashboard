@@ -1,9 +1,9 @@
 "use client";
 
-import { Clock, Save } from "lucide-react";
+import { Clock, Pause, Play, Save, SlidersHorizontal } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { api, type GameTimeSetting } from "@/lib/api";
-import { GAME_TIMEZONE, estimateGapByGameMinute, getGameMinute, getGameStatus, hktLocalToIso, isoToHktInputParts } from "@/lib/gameTime";
+import { api, type GameTimeSetting, type GapModelConfig } from "@/lib/api";
+import { GAME_TIMEZONE, getAggressiveBreakoutSettings, getAggressiveStopProtectionSettings, getGameMinute, getGameStatus, hktLocalToIso, isoToHktInputParts } from "@/lib/gameTime";
 
 export function GameTimePanel({ marketId, onGameMinuteChange }: { marketId: string; onGameMinuteChange?: (minute: number) => void }) {
   const [setting, setSetting] = useState<GameTimeSetting | null>(null);
@@ -13,6 +13,19 @@ export function GameTimePanel({ marketId, onGameMinuteChange }: { marketId: stri
   const [now, setNow] = useState(() => new Date());
   const [message, setMessage] = useState("");
   const [saving, setSaving] = useState(false);
+  const [togglingPause, setTogglingPause] = useState(false);
+  const [startingSecondHalf, setStartingSecondHalf] = useState(false);
+  const [gapModelOpen, setGapModelOpen] = useState(false);
+  const [gapModelText, setGapModelText] = useState("");
+  const [savingGapModel, setSavingGapModel] = useState(false);
+
+  function applySetting(next: GameTimeSetting) {
+    setSetting(next);
+    setTimezone(next.timezone || GAME_TIMEZONE);
+    const parts = isoToHktInputParts(next.kickoffTimeIso);
+    setDate(parts.date);
+    setTime(parts.time);
+  }
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 30_000);
@@ -23,20 +36,33 @@ export function GameTimePanel({ marketId, onGameMinuteChange }: { marketId: stri
     let mounted = true;
     api<GameTimeSetting>(`/api/settings/game-time/${encodeURIComponent(marketId)}`).then((next) => {
       if (!mounted) return;
-      setSetting(next);
-      setTimezone(next.timezone || GAME_TIMEZONE);
-      const parts = isoToHktInputParts(next.kickoffTimeIso);
-      setDate(parts.date);
-      setTime(parts.time);
+      applySetting(next);
     }).catch((error) => setMessage(error instanceof Error ? error.message : "Could not load game time"));
     return () => { mounted = false; };
   }, [marketId]);
 
+  useEffect(() => {
+    if (!gapModelOpen || gapModelText) return;
+    let mounted = true;
+    api<GapModelConfig>("/api/settings/gap-model").then((next) => {
+      if (mounted) setGapModelText(JSON.stringify(next, null, 2));
+    }).catch((error) => setMessage(error instanceof Error ? error.message : "Could not load gap model"));
+    return () => { mounted = false; };
+  }, [gapModelOpen, gapModelText]);
+
   const live = useMemo(() => {
-    if (!setting?.kickoffTimeIso) return { minute: 0, status: "Waiting for kickoff", estimatedGap: 0 };
-    const minute = getGameMinute(setting.kickoffTimeIso, now);
-    return { minute, status: getGameStatus(setting.kickoffTimeIso, now), estimatedGap: estimateGapByGameMinute(minute) };
-  }, [now, setting?.kickoffTimeIso]);
+    if (!setting?.kickoffTimeIso) return { minute: 0, status: "Waiting for kickoff" };
+    if (setting.paused) return { minute: setting.pausedGameMinute ?? setting.gameMinute ?? 0, status: "Paused" };
+    if (setting.phase === "SECOND_HALF" && setting.secondHalfStartedAtIso) {
+      const minute = Math.max(45, 45 + getGameMinute(setting.secondHalfStartedAtIso, now));
+      return { minute, status: minute >= 120 ? "Finished" : "Second half" };
+    }
+    const firstHalfMinute = Math.min(45, getGameMinute(setting.kickoffTimeIso, now));
+    if (firstHalfMinute >= 45) return { minute: 45, status: "Half-time" };
+    return { minute: firstHalfMinute, status: getGameStatus(setting.kickoffTimeIso, now) === "Waiting for kickoff" ? "Waiting for kickoff" : "First half" };
+  }, [now, setting?.gameMinute, setting?.kickoffTimeIso, setting?.paused, setting?.pausedGameMinute, setting?.phase, setting?.secondHalfStartedAtIso]);
+  const breakoutPreset = getAggressiveBreakoutSettings(live.minute);
+  const stopPreset = getAggressiveStopProtectionSettings(live.minute);
 
   useEffect(() => {
     onGameMinuteChange?.(live.minute);
@@ -55,13 +81,75 @@ export function GameTimePanel({ marketId, onGameMinuteChange }: { marketId: stri
         method: "PUT",
         body: JSON.stringify({ kickoffTimeIso, timezone })
       });
-      setSetting(next);
+      applySetting(next);
       setMessage("Kickoff time saved");
       window.setTimeout(() => setMessage(""), 2_000);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Save failed");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function togglePause() {
+    if (!setting?.kickoffTimeIso) {
+      setMessage("Save kickoff time first.");
+      return;
+    }
+    setTogglingPause(true);
+    setMessage("");
+    try {
+      const action = setting.paused ? "resume" : "pause";
+      const next = await api<GameTimeSetting>(`/api/settings/game-time/${encodeURIComponent(marketId)}/${action}`, {
+        method: "POST"
+      });
+      applySetting(next);
+      setMessage(setting.paused ? "Game time resumed" : "Game time paused");
+      window.setTimeout(() => setMessage(""), 2_000);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not update game time");
+    } finally {
+      setTogglingPause(false);
+    }
+  }
+
+  async function startSecondHalf() {
+    if (!setting?.kickoffTimeIso) {
+      setMessage("Save kickoff time first.");
+      return;
+    }
+    setStartingSecondHalf(true);
+    setMessage("");
+    try {
+      const next = await api<GameTimeSetting>(`/api/settings/game-time/${encodeURIComponent(marketId)}/second-half`, {
+        method: "POST"
+      });
+      applySetting(next);
+      setMessage("Second half started");
+      window.setTimeout(() => setMessage(""), 2_000);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not start second half");
+    } finally {
+      setStartingSecondHalf(false);
+    }
+  }
+
+  async function saveGapModel() {
+    setSavingGapModel(true);
+    setMessage("");
+    try {
+      const parsed = JSON.parse(gapModelText) as GapModelConfig;
+      const next = await api<GapModelConfig>("/api/settings/gap-model", {
+        method: "PUT",
+        body: JSON.stringify(parsed)
+      });
+      setGapModelText(JSON.stringify(next, null, 2));
+      setMessage("Gap model saved");
+      window.setTimeout(() => setMessage(""), 2_000);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Gap model save failed");
+    } finally {
+      setSavingGapModel(false);
     }
   }
 
@@ -89,12 +177,40 @@ export function GameTimePanel({ marketId, onGameMinuteChange }: { marketId: stri
           <Save className="h-4 w-4" />
           {saving ? "Saving..." : "Save Kickoff Time"}
         </button>
+        <button className="secondary-button w-full" onClick={togglePause} disabled={togglingPause || !setting?.kickoffTimeIso} type="button">
+          {setting?.paused ? <Play className="h-4 w-4" /> : <Pause className="h-4 w-4" />}
+          {togglingPause ? "Updating..." : setting?.paused ? "Resume Game Time" : "Pause Game Time"}
+        </button>
+        <button className="secondary-button w-full" onClick={startSecondHalf} disabled={startingSecondHalf || !setting?.kickoffTimeIso || setting?.phase === "SECOND_HALF"} type="button">
+          <Play className="h-4 w-4" />
+          {startingSecondHalf ? "Starting..." : "Start Second Half"}
+        </button>
       </div>
       <div className="mt-3 rounded border border-line bg-panel p-2 text-xs">
         <div>Current game minute: <span className="font-mono">{live.minute}'</span></div>
         <div>Status: <span className="font-semibold">{live.status}</span></div>
-        <div>Estimated gap: <span className="font-mono">{live.estimatedGap.toFixed(3)}</span></div>
+        <div>Half: <span className="font-semibold">{live.status === "Second half" || setting?.phase === "SECOND_HALF" ? "Second" : live.status === "Half-time" ? "Half-time" : "First"}</span></div>
+        <div>Breakout: <span className="font-mono">{breakoutPreset.label}</span></div>
+        <div>Stop: <span className="font-mono">{stopPreset.label}</span></div>
       </div>
+      <button className="secondary-button mt-3 w-full" onClick={() => setGapModelOpen((open) => !open)} type="button">
+        <SlidersHorizontal className="h-4 w-4" />
+        Gap Model
+      </button>
+      {gapModelOpen && (
+        <div className="mt-3 rounded border border-line bg-panel p-2">
+          <textarea
+            className="control min-h-64 w-full font-mono text-[11px]"
+            value={gapModelText}
+            onChange={(event) => setGapModelText(event.target.value)}
+            spellCheck={false}
+          />
+          <button className="primary-button mt-2 w-full" onClick={saveGapModel} disabled={savingGapModel || gapModelText.trim().length === 0} type="button">
+            <Save className="h-4 w-4" />
+            {savingGapModel ? "Saving..." : "Save Gap Model"}
+          </button>
+        </div>
+      )}
       {message && <div className="mt-2 text-xs font-semibold text-slate-600">{message}</div>}
     </section>
   );

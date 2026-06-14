@@ -4,7 +4,7 @@ import { z } from "zod";
 import { config } from "../config.js";
 import { asyncHandler, requireString } from "../lib/http.js";
 import { checkGeoblock } from "../services/geoblockService.js";
-import { GAME_TIMEZONE, getMarketGameTime, setMarketGameTime } from "../services/gameTimeService.js";
+import { GAME_TIMEZONE, getGapModelConfig, getMarketGameTime, pauseMarketGameTime, resumeMarketGameTime, setGapModelConfig, setMarketGameTime, startSecondHalf } from "../services/gameTimeService.js";
 import { getAppSettings, setSetting } from "../services/settingsService.js";
 
 export const settingsRouter = Router();
@@ -30,13 +30,36 @@ settingsRouter.get("/trading-mode", asyncHandler(async (_req, res) => {
 
 settingsRouter.get("/game-time/:marketId", asyncHandler(async (req, res) => {
   const marketId = requireString(req.params.marketId, "market id");
-  res.json(await getMarketGameTime(marketId) ?? { marketId, kickoffTimeIso: null, timezone: GAME_TIMEZONE, gameMinute: 0, status: "Waiting for kickoff", estimatedGap: 0 });
+  res.json(await getMarketGameTime(marketId) ?? { marketId, kickoffTimeIso: null, timezone: GAME_TIMEZONE, gameMinute: 0, status: "Waiting for kickoff", estimatedGap: 0, paused: false, pausedGameMinute: null, phase: "FIRST_HALF", secondHalfStartedAtIso: null });
 }));
 
 settingsRouter.put("/game-time/:marketId", asyncHandler(async (req, res) => {
   const marketId = requireString(req.params.marketId, "market id");
   const body = gameTimeSchema.parse(req.body);
   res.json(await setMarketGameTime({ marketId, kickoffTimeIso: body.kickoffTimeIso, timezone: body.timezone }));
+}));
+
+settingsRouter.post("/game-time/:marketId/pause", asyncHandler(async (req, res) => {
+  const marketId = requireString(req.params.marketId, "market id");
+  res.json(await pauseMarketGameTime(marketId) ?? { marketId, kickoffTimeIso: null, timezone: GAME_TIMEZONE, gameMinute: 0, status: "Waiting for kickoff", estimatedGap: 0, paused: false, pausedGameMinute: null, phase: "FIRST_HALF", secondHalfStartedAtIso: null });
+}));
+
+settingsRouter.post("/game-time/:marketId/resume", asyncHandler(async (req, res) => {
+  const marketId = requireString(req.params.marketId, "market id");
+  res.json(await resumeMarketGameTime(marketId) ?? { marketId, kickoffTimeIso: null, timezone: GAME_TIMEZONE, gameMinute: 0, status: "Waiting for kickoff", estimatedGap: 0, paused: false, pausedGameMinute: null, phase: "FIRST_HALF", secondHalfStartedAtIso: null });
+}));
+
+settingsRouter.post("/game-time/:marketId/second-half", asyncHandler(async (req, res) => {
+  const marketId = requireString(req.params.marketId, "market id");
+  res.json(await startSecondHalf(marketId) ?? { marketId, kickoffTimeIso: null, timezone: GAME_TIMEZONE, gameMinute: 0, status: "Waiting for kickoff", estimatedGap: 0, paused: false, pausedGameMinute: null, phase: "FIRST_HALF", secondHalfStartedAtIso: null });
+}));
+
+settingsRouter.get("/gap-model", asyncHandler(async (_req, res) => {
+  res.json(await getGapModelConfig());
+}));
+
+settingsRouter.put("/gap-model", asyncHandler(async (req, res) => {
+  res.json(await setGapModelConfig(req.body));
 }));
 
 settingsRouter.post("/trading-mode", asyncHandler(async (req, res) => {

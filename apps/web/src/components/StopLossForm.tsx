@@ -355,12 +355,12 @@ export function StopLossForm({ profile, marketId, conditionId, tokenId, outcomeN
                 <div className="mb-2 font-semibold">Aggressive PnL Protection</div>
                 <div className="whitespace-pre-line leading-5 text-slate-600">{`Suggested football stop-loss settings:
 
-0'-75':  slippage 6c,  max spread 10c
+0'-75':  slippage 5c,  max spread 8c
 75'-88': slippage 10c, max spread 15c
-88'+:    slippage 20c, max spread 35c
-90'+:    slippage 25c, max spread disabled or 40c
+88'-90': slippage 18c, max spread 28c
+90'+:    slippage 30c, max spread disabled or 40c
 
-Purpose: protect PnL during football price gaps. This is less conservative and prioritizes getting out over perfect execution.`}</div>
+Purpose: sell aggressively enough to escape when bids disappear during football gaps.`}</div>
                 <button className="secondary-button mt-3 w-full" onClick={applyGameTimeStopSettings} type="button">
                   Apply Game-Time Stop Settings
                 </button>
@@ -390,12 +390,12 @@ Purpose: protect PnL during football price gaps. This is less conservative and p
                 <div className="mb-2 font-semibold">Aggressive Breakout Buy</div>
                 <div className="whitespace-pre-line leading-5 text-slate-600">{`Suggested football breakout-buy settings:
 
-0'-75':  slippage 6c,  max spread 10c
-75'-88': slippage 8c,  max spread 15c
-88'+:    slippage 12c, max spread 25c
-90'+:    slippage 15c, max spread 30c
+0'-75':  slippage 4c,  max spread 6c
+75'-88': slippage 8c,  max spread 12c
+88'-90': slippage 15c, max spread 22c
+90'+:    slippage 25c, max spread 35c
 
-Purpose: improve fill probability during football breakout gaps, but avoid chasing as aggressively as stop-loss exits.`}</div>
+Purpose: chase enough to get filled when asks jump during football breakouts.`}</div>
                 <button className="secondary-button mt-3 w-full" onClick={applyGameTimeBreakoutSettings} type="button">
                   Apply Game-Time Breakout Settings
                 </button>

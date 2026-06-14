@@ -227,8 +227,8 @@ assert.equal(assertLiveOrderAccepted({ success: true, orderID: "0xabc", status: 
 assert.equal(getGameMinute("2026-06-14T12:00:00.000Z", new Date("2026-06-14T12:30:00.000Z")), 30);
 assert.equal(getGameMinute("2026-06-14T12:00:00.000Z", new Date("2026-06-14T11:59:00.000Z")), 0);
 assert.equal(Number(estimateGapByGameMinute(10).toFixed(2)) >= 0.12, true);
-assert.deepEqual(getAggressiveStopProtectionSettings(90), { slippageLimit: 0.25, maxSpread: 0.40, disableMaxSpread: true, label: "90'+: slippage 25c, max spread disabled or 40c" });
-assert.deepEqual(getAggressiveBreakoutSettings(88), { slippageLimit: 0.12, maxSpread: 0.25, disableMaxSpread: false, label: "88'+: breakout slippage 12c, max spread 25c" });
+assert.deepEqual(getAggressiveStopProtectionSettings(90), { slippageLimit: 0.30, maxSpread: 0.40, disableMaxSpread: true, label: "90'+: stop slippage 30c, max spread disabled or 40c" });
+assert.deepEqual(getAggressiveBreakoutSettings(88), { slippageLimit: 0.15, maxSpread: 0.22, disableMaxSpread: false, label: "88'-90': breakout slippage 15c, max spread 22c" });
 assert.deepEqual(resolveEffectiveRiskSettings({
   ruleType: RuleType.STOP_LOSS,
   slippageLimit: 0.02,
@@ -248,12 +248,12 @@ assert.deepEqual(resolveEffectiveRiskSettings({
   maxSpread: 0.03,
   disableMaxSpread: false
 }, 90), {
-  slippageLimit: 0.25,
+  slippageLimit: 0.30,
   maxSpread: 0.40,
   disableMaxSpread: true,
   gameMinute: 90,
   dynamic: true,
-  label: "90'+: slippage 25c, max spread disabled or 40c"
+  label: "Stop gap model: 30.0c slippage, max spread disabled (90'+: stop slippage 30c, max spread disabled or 40c)"
 });
 assert.deepEqual(resolveEffectiveRiskSettings({
   ruleType: RuleType.BREAKOUT_BUY,
@@ -261,12 +261,12 @@ assert.deepEqual(resolveEffectiveRiskSettings({
   maxSpread: 0.03,
   disableMaxSpread: false
 }, 88), {
-  slippageLimit: 0.12,
-  maxSpread: 0.25,
+  slippageLimit: 0.15,
+  maxSpread: 0.22,
   disableMaxSpread: false,
   gameMinute: 88,
   dynamic: true,
-  label: "88'+: breakout slippage 12c, max spread 25c"
+  label: "Breakout gap model: 15.0c slippage, 22c max spread (88'-90': breakout slippage 15c, max spread 22c)"
 });
 
 const executionBook = {
@@ -281,6 +281,19 @@ const executionBook = {
   lastTradePrice: null,
   lastUpdateTime: "now"
 };
+assert.deepEqual(resolveEffectiveRiskSettings({
+  ruleType: RuleType.BREAKOUT_BUY,
+  slippageLimit: 0.02,
+  maxSpread: 0.03,
+  disableMaxSpread: false
+}, 75, executionBook, undefined, { upMove10Cents: 6 }), {
+  slippageLimit: 0.25,
+  maxSpread: 0.12,
+  disableMaxSpread: false,
+  gameMinute: 75,
+  dynamic: true,
+  label: "Breakout gap model: 25.0c slippage, 12c max spread (75'-88': breakout slippage 8c, max spread 12c)"
+});
 assert.equal(executionPrice({ executionType: "MARKETABLE_LIMIT", stopPrice: 0.55, slippageLimit: 0.04 }, executionBook), 0.51);
 assert.equal(executionPrice({ executionType: "MARKETABLE_LIMIT", stopPrice: 0.55, slippageLimit: 0.04 }, executionBook, true), 0.40);
 assert.equal(marketableBuyPrice({ stopPrice: 0.55, slippageLimit: 0.05 }, executionBook), 0.66);

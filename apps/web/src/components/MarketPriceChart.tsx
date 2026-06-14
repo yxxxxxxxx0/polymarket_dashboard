@@ -256,7 +256,7 @@ export function MarketPriceChart({ tokenIds, outcomeNames, marketVolume, marketL
         <div style={{ borderTop: "1px solid #24313b" }}>
           <div style={{ display: "flex", height: 38, alignItems: "center", justifyContent: "space-between", padding: "0 16px", fontSize: 12, color: "#94a3b8" }}>
             <span style={{ fontWeight: 700, color: "#e2e8f0" }}>Rolling Standardized OFI</span>
-            <span>30s window</span>
+            <span>10m window</span>
           </div>
           <svg viewBox={`0 0 ${WIDTH} ${OFI_HEIGHT}`} style={{ display: "block", width: "100%", height: 190, background: "#12181e" }} role="img" aria-label={`${outcomeNames.join(", ")} rolling standardized OFI chart`}>
             {[0.25, 0.5, 0.75].map((ratio) => (

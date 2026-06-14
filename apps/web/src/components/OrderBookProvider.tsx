@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { api, streamUrl, UI_REFRESH_MS, withProfile, type OrderBook } from "@/lib/api";
+import { api, ORDERBOOK_POLL_MS, streamUrl, withProfile, type OrderBook } from "@/lib/api";
 
 type OrderBookContextValue = {
   books: Record<string, OrderBook | undefined>;
@@ -35,7 +35,7 @@ export function OrderBookProvider({ tokenIds, profile, children }: { tokenIds: s
     };
 
     loadBooks();
-    const poll = window.setInterval(loadBooks, UI_REFRESH_MS);
+    const poll = window.setInterval(loadBooks, ORDERBOOK_POLL_MS);
     const sources = tokens.map((tokenId) => {
       const source = new EventSource(streamUrl(`/api/stream/orderbook?tokenId=${encodeURIComponent(tokenId)}`, profile));
       source.onmessage = (event) => updateBook(JSON.parse(event.data) as OrderBook);
