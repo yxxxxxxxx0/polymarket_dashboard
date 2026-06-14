@@ -28,9 +28,23 @@ export function GameTimePanel({ marketId, onGameMinuteChange }: { marketId: stri
   }
 
   useEffect(() => {
-    const timer = window.setInterval(() => setNow(new Date()), 30_000);
+    const timer = window.setInterval(() => setNow(new Date()), 1_000);
     return () => window.clearInterval(timer);
   }, []);
+
+  function elapsedSecondsSince(iso: string | null | undefined) {
+    if (!iso) return 0;
+    const startedAt = new Date(iso).getTime();
+    if (!Number.isFinite(startedAt)) return 0;
+    return Math.max(0, Math.floor((now.getTime() - startedAt) / 1_000));
+  }
+
+  function formatElapsed(seconds: number) {
+    const clamped = Math.max(0, Math.floor(seconds));
+    const minutes = Math.floor(clamped / 60);
+    const remainingSeconds = clamped % 60;
+    return `${minutes}:${String(remainingSeconds).padStart(2, "0")}`;
+  }
 
   useEffect(() => {
     let mounted = true;
@@ -51,15 +65,20 @@ export function GameTimePanel({ marketId, onGameMinuteChange }: { marketId: stri
   }, [gapModelOpen, gapModelText]);
 
   const live = useMemo(() => {
-    if (!setting?.kickoffTimeIso) return { minute: 0, status: "Waiting for kickoff" };
-    if (setting.paused) return { minute: setting.pausedGameMinute ?? setting.gameMinute ?? 0, status: "Paused" };
-    if (setting.phase === "SECOND_HALF" && setting.secondHalfStartedAtIso) {
-      const minute = Math.max(45, 45 + getGameMinute(setting.secondHalfStartedAtIso, now));
-      return { minute, status: minute >= 120 ? "Finished" : "Second half" };
+    if (!setting?.kickoffTimeIso) return { elapsedSeconds: 0, minute: 0, status: "Waiting for kickoff" };
+    if (setting.paused) {
+      const minute = setting.pausedGameMinute ?? setting.gameMinute ?? 0;
+      return { elapsedSeconds: minute * 60, minute, status: "Paused" };
     }
-    const firstHalfMinute = Math.min(45, getGameMinute(setting.kickoffTimeIso, now));
-    if (firstHalfMinute >= 45) return { minute: 45, status: "Half-time" };
-    return { minute: firstHalfMinute, status: getGameStatus(setting.kickoffTimeIso, now) === "Waiting for kickoff" ? "Waiting for kickoff" : "First half" };
+    if (setting.phase === "SECOND_HALF" && setting.secondHalfStartedAtIso) {
+      const elapsedSeconds = 45 * 60 + elapsedSecondsSince(setting.secondHalfStartedAtIso);
+      const minute = Math.max(45, Math.floor(elapsedSeconds / 60));
+      return { elapsedSeconds, minute, status: minute >= 120 ? "Finished" : "Second half" };
+    }
+    const firstHalfElapsedSeconds = Math.min(45 * 60, elapsedSecondsSince(setting.kickoffTimeIso));
+    const firstHalfMinute = Math.min(45, Math.floor(firstHalfElapsedSeconds / 60));
+    if (firstHalfMinute >= 45) return { elapsedSeconds: 45 * 60, minute: 45, status: "Half-time" };
+    return { elapsedSeconds: firstHalfElapsedSeconds, minute: firstHalfMinute, status: getGameStatus(setting.kickoffTimeIso, now) === "Waiting for kickoff" ? "Waiting for kickoff" : "First half" };
   }, [now, setting?.gameMinute, setting?.kickoffTimeIso, setting?.paused, setting?.pausedGameMinute, setting?.phase, setting?.secondHalfStartedAtIso]);
   const breakoutPreset = getAggressiveBreakoutSettings(live.minute);
   const stopPreset = getAggressiveStopProtectionSettings(live.minute);
@@ -187,6 +206,7 @@ export function GameTimePanel({ marketId, onGameMinuteChange }: { marketId: stri
         </button>
       </div>
       <div className="mt-3 rounded border border-line bg-panel p-2 text-xs">
+        <div>Elapsed time: <span className="font-mono">{formatElapsed(live.elapsedSeconds)}</span></div>
         <div>Current game minute: <span className="font-mono">{live.minute}'</span></div>
         <div>Status: <span className="font-semibold">{live.status}</span></div>
         <div>Half: <span className="font-semibold">{live.status === "Second half" || setting?.phase === "SECOND_HALF" ? "Second" : live.status === "Half-time" ? "Half-time" : "First"}</span></div>
