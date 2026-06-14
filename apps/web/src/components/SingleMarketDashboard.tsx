@@ -34,6 +34,7 @@ export function SingleMarketDashboard({ profile = "football", marketLabel = "Mar
   const [savedMarketsLoading, setSavedMarketsLoading] = useState(false);
   const [newMarketOpen, setNewMarketOpen] = useState(false);
   const [gameMinute, setGameMinute] = useState(0);
+  const [gameTimeConfigured, setGameTimeConfigured] = useState(false);
 
   async function loadMarket() {
     setMarketLoadError("");
@@ -291,7 +292,13 @@ export function SingleMarketDashboard({ profile = "football", marketLabel = "Mar
 
           <section className="space-y-4">
             <BuyingPowerSummary tokenId={tokenId} />
-            <GameTimePanel marketId={market.id} onGameMinuteChange={setGameMinute} />
+            <GameTimePanel
+              marketId={market.id}
+              onGameMinuteChange={(minute, configured) => {
+                setGameMinute(minute);
+                setGameTimeConfigured(configured);
+              }}
+            />
             <OrderTicket profile={profile} marketId={market.id} conditionId={market.conditionId} tokenId={tokenId} outcomeName={outcome} />
             <button className="primary-button w-full" onClick={() => setSequenceBuilderOpen(true)}>
               <ArrowRight className="h-4 w-4" />
@@ -323,6 +330,7 @@ export function SingleMarketDashboard({ profile = "football", marketLabel = "Mar
             profile={profile}
             initialMode={ruleMode}
             gameMinute={gameMinute}
+            gameTimeConfigured={gameTimeConfigured}
             onClose={() => setRuleMode(null)}
             onSaved={handleRuleSaved}
           />
@@ -335,6 +343,7 @@ export function SingleMarketDashboard({ profile = "football", marketLabel = "Mar
             outcomeName={outcome}
             profile={profile}
             gameMinute={gameMinute}
+            gameTimeConfigured={gameTimeConfigured}
             onClose={() => setSequenceBuilderOpen(false)}
             onSaved={handleRuleSaved}
           />

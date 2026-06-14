@@ -59,7 +59,7 @@ function ModeButton({ active, icon: Icon, label, onClick }: {
   );
 }
 
-export function StopLossForm({ profile, marketId, conditionId, tokenId, outcomeName, initialMode = "STOP_LOSS", gameMinute = 0, onClose, onSaved }: {
+export function StopLossForm({ profile, marketId, conditionId, tokenId, outcomeName, initialMode = "STOP_LOSS", gameMinute = 0, gameTimeConfigured = false, onClose, onSaved }: {
   profile?: string;
   marketId: string;
   conditionId?: string;
@@ -67,6 +67,7 @@ export function StopLossForm({ profile, marketId, conditionId, tokenId, outcomeN
   outcomeName: string;
   initialMode?: RuleMode;
   gameMinute?: number;
+  gameTimeConfigured?: boolean;
   onClose: () => void;
   onSaved?: (message: string) => void;
 }) {
@@ -206,6 +207,10 @@ export function StopLossForm({ profile, marketId, conditionId, tokenId, outcomeN
   const breakoutPreset = getAggressiveBreakoutSettings(gameMinute);
 
   function applyGameTimeStopSettings() {
+    if (!gameTimeConfigured) {
+      setMessage("Set kickoff time before applying game-time stop settings.");
+      return;
+    }
     setSlippageLimit(String(stopPreset.slippageLimit));
     setMaxSpread(String(stopPreset.maxSpread));
     setDisableMaxSpread(stopPreset.disableMaxSpread);
@@ -217,6 +222,10 @@ export function StopLossForm({ profile, marketId, conditionId, tokenId, outcomeN
   }
 
   function applyGameTimeBreakoutSettings() {
+    if (!gameTimeConfigured) {
+      setMessage("Set kickoff time before applying game-time breakout settings.");
+      return;
+    }
     setSlippageLimit(String(breakoutPreset.slippageLimit));
     setMaxSpread(String(breakoutPreset.maxSpread));
     setDisableMaxSpread(false);
@@ -361,10 +370,10 @@ export function StopLossForm({ profile, marketId, conditionId, tokenId, outcomeN
 90'+:    slippage 30c, max spread disabled or 40c
 
 Purpose: sell aggressively enough to escape when bids disappear during football gaps.`}</div>
-                <button className="secondary-button mt-3 w-full" onClick={applyGameTimeStopSettings} type="button">
+                <button className="secondary-button mt-3 w-full" onClick={applyGameTimeStopSettings} disabled={!gameTimeConfigured} type="button">
                   Apply Game-Time Stop Settings
                 </button>
-                <div className="mt-2 text-[11px] font-semibold text-slate-500">Minute {gameMinute}' preset: {stopPreset.label}</div>
+                <div className="mt-2 text-[11px] font-semibold text-slate-500">{gameTimeConfigured ? `Minute ${gameMinute}' preset: ${stopPreset.label}` : "Set kickoff time in Game Time first."}</div>
               </div>
               <label className="flex items-center gap-2 rounded-md border border-line bg-panel p-2 text-xs font-semibold text-slate-700">
                 <input type="checkbox" checked={softStopEnabled} onChange={(event) => setSoftStopEnabled(event.target.checked)} />
@@ -396,10 +405,10 @@ Purpose: sell aggressively enough to escape when bids disappear during football 
 90'+:    slippage 25c, max spread 35c
 
 Purpose: chase enough to get filled when asks jump during football breakouts.`}</div>
-                <button className="secondary-button mt-3 w-full" onClick={applyGameTimeBreakoutSettings} type="button">
+                <button className="secondary-button mt-3 w-full" onClick={applyGameTimeBreakoutSettings} disabled={!gameTimeConfigured} type="button">
                   Apply Game-Time Breakout Settings
                 </button>
-                <div className="mt-2 text-[11px] font-semibold text-slate-500">Minute {gameMinute}' preset: {breakoutPreset.label}</div>
+                <div className="mt-2 text-[11px] font-semibold text-slate-500">{gameTimeConfigured ? `Minute ${gameMinute}' preset: ${breakoutPreset.label}` : "Set kickoff time in Game Time first."}</div>
               </div>
               <Field label="Stake amount" help="USD amount to use when the breakout triggers.">
                 <input className="control w-full" value={stakeAmount} onChange={(event) => setStakeAmount(event.target.value)} />

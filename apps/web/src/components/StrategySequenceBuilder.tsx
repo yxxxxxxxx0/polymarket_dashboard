@@ -31,13 +31,14 @@ function StepHeader({ index, icon: Icon, title, status }: { index: number; icon:
   );
 }
 
-export function StrategySequenceBuilder({ profile, marketId, conditionId, tokenId, outcomeName, gameMinute = 0, onClose, onSaved }: {
+export function StrategySequenceBuilder({ profile, marketId, conditionId, tokenId, outcomeName, gameMinute = 0, gameTimeConfigured = false, onClose, onSaved }: {
   profile?: string;
   marketId: string;
   conditionId?: string;
   tokenId: string;
   outcomeName: string;
   gameMinute?: number;
+  gameTimeConfigured?: boolean;
   onClose: () => void;
   onSaved?: (message: string) => void;
 }) {
@@ -104,6 +105,10 @@ export function StrategySequenceBuilder({ profile, marketId, conditionId, tokenI
   }, [triggerPrice, stakeAmount, maxSpread, disableBreakoutMaxSpread, activationCondition, minFilledShares, cancelAfterSeconds, stopEnabled, trailEnabled, stopMode, stopPercentage, stopPrice, trailPercentage]);
 
   function applyGameTimeBreakoutSettings() {
+    if (!gameTimeConfigured) {
+      setMessage("Set kickoff time before applying game-time breakout settings.");
+      return;
+    }
     setBuySlippage(String(breakoutPreset.slippageLimit));
     setMaxSpread(String(breakoutPreset.maxSpread));
     setDisableBreakoutMaxSpread(false);
@@ -113,6 +118,10 @@ export function StrategySequenceBuilder({ profile, marketId, conditionId, tokenI
   }
 
   function applyGameTimeStopSettings() {
+    if (!gameTimeConfigured) {
+      setMessage("Set kickoff time before applying game-time stop settings.");
+      return;
+    }
     setStopSlippage(String(stopPreset.slippageLimit));
     setStopMaxSpread(String(stopPreset.maxSpread));
     setDisableStopMaxSpread(stopPreset.disableMaxSpread);
@@ -244,8 +253,8 @@ export function StrategySequenceBuilder({ profile, marketId, conditionId, tokenI
 90'+:    slippage 25c, max spread 35c
 
 Purpose: chase enough to get filled when asks jump during football breakouts.`}</div>
-                <button className="secondary-button mt-3 w-full" onClick={applyGameTimeBreakoutSettings} type="button">Apply Game-Time Breakout Settings</button>
-                <div className="mt-2 text-[11px] font-semibold text-slate-500">Minute {gameMinute}' preset: {breakoutPreset.label}</div>
+                <button className="secondary-button mt-3 w-full" onClick={applyGameTimeBreakoutSettings} disabled={!gameTimeConfigured} type="button">Apply Game-Time Breakout Settings</button>
+                <div className="mt-2 text-[11px] font-semibold text-slate-500">{gameTimeConfigured ? `Minute ${gameMinute}' preset: ${breakoutPreset.label}` : "Set kickoff time in Game Time first."}</div>
               </div>
             </div>
           </section>
@@ -281,8 +290,8 @@ Purpose: chase enough to get filled when asks jump during football breakouts.`}<
 90'+:    slippage 30c, max spread disabled or 40c
 
 Purpose: sell aggressively enough to escape when bids disappear during football gaps.`}</div>
-                <button className="secondary-button mt-3 w-full" onClick={applyGameTimeStopSettings} disabled={!stopEnabled} type="button">Apply Game-Time Stop Settings</button>
-                <div className="mt-2 text-[11px] font-semibold text-slate-500">Minute {gameMinute}' preset: {stopPreset.label}</div>
+                <button className="secondary-button mt-3 w-full" onClick={applyGameTimeStopSettings} disabled={!stopEnabled || !gameTimeConfigured} type="button">Apply Game-Time Stop Settings</button>
+                <div className="mt-2 text-[11px] font-semibold text-slate-500">{gameTimeConfigured ? `Minute ${gameMinute}' preset: ${stopPreset.label}` : "Set kickoff time in Game Time first."}</div>
               </div>
             </div>
           </section>

@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api, type GameTimeSetting, type GapModelConfig } from "@/lib/api";
 import { GAME_TIMEZONE, getAggressiveBreakoutSettings, getAggressiveStopProtectionSettings, getGameMinute, getGameStatus, hktLocalToIso, isoToHktInputParts } from "@/lib/gameTime";
 
-export function GameTimePanel({ marketId, onGameMinuteChange }: { marketId: string; onGameMinuteChange?: (minute: number) => void }) {
+export function GameTimePanel({ marketId, onGameMinuteChange }: { marketId: string; onGameMinuteChange?: (minute: number, configured: boolean) => void }) {
   const [setting, setSetting] = useState<GameTimeSetting | null>(null);
   const [date, setDate] = useState("");
   const [time, setTime] = useState("");
@@ -77,7 +77,7 @@ export function GameTimePanel({ marketId, onGameMinuteChange }: { marketId: stri
   }, []);
 
   const live = useMemo(() => {
-    if (!setting?.kickoffTimeIso) return { elapsedSeconds: 0, minute: 0, status: "Waiting for kickoff" };
+    if (!setting?.kickoffTimeIso) return { elapsedSeconds: 0, minute: 0, status: "Game time not configured" };
     if (setting.paused) {
       const minute = setting.pausedGameMinute ?? setting.gameMinute ?? 0;
       return { elapsedSeconds: minute * 60, minute, status: "Paused" };
@@ -96,8 +96,8 @@ export function GameTimePanel({ marketId, onGameMinuteChange }: { marketId: stri
   const stopPreset = getAggressiveStopProtectionSettings(live.minute);
 
   useEffect(() => {
-    onGameMinuteChange?.(live.minute);
-  }, [live.minute, onGameMinuteChange]);
+    onGameMinuteChange?.(live.minute, Boolean(setting?.kickoffTimeIso));
+  }, [live.minute, onGameMinuteChange, setting?.kickoffTimeIso]);
 
   async function save() {
     const kickoffTimeIso = hktLocalToIso(date, time);
