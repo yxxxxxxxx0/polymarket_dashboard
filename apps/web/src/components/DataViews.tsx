@@ -1,7 +1,7 @@
 "use client";
 
 import { Ban, CheckCircle2, Power, RefreshCw, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api, post, withProfile, type AccountPositionSummary } from "@/lib/api";
 import { useAccount } from "./AccountProvider";
 
@@ -27,12 +27,149 @@ function shortId(value: unknown) {
   return `${value.slice(0, 4)}...${value.slice(-4)}`;
 }
 
-function ruleRelationship(row: AnyRow) {
-  if (!row.strategySequenceId) return "Single rule";
-  if (row.parentRuleId) return `Child of ${shortId(row.parentRuleId)}`;
+function relationshipKind(row: AnyRow) {
+  if (!row.strategySequenceId) return "single";
+  if (row.parentRuleId) return "child";
   const childIds = Array.isArray(row.childRuleIds) ? row.childRuleIds : [];
-  if (childIds.length > 0) return `Parent breakout (${childIds.length} ${childIds.length === 1 ? "child" : "children"})`;
-  return "Sequence rule";
+  if (childIds.length > 0) return "parent";
+  return "sequence";
+}
+
+const relationshipPalette = [
+  {
+    wrap: "border-sky-300 bg-sky-50 text-sky-800",
+    label: "bg-sky-600 text-white",
+    chip: "border-sky-300 bg-white/80 text-sky-800"
+  },
+  {
+    wrap: "border-violet-300 bg-violet-50 text-violet-800",
+    label: "bg-violet-600 text-white",
+    chip: "border-violet-300 bg-white/80 text-violet-800"
+  },
+  {
+    wrap: "border-amber-300 bg-amber-50 text-amber-800",
+    label: "bg-amber-500 text-white",
+    chip: "border-amber-300 bg-white/80 text-amber-800"
+  },
+  {
+    wrap: "border-emerald-300 bg-emerald-50 text-emerald-800",
+    label: "bg-emerald-600 text-white",
+    chip: "border-emerald-300 bg-white/80 text-emerald-800"
+  },
+  {
+    wrap: "border-rose-300 bg-rose-50 text-rose-800",
+    label: "bg-rose-600 text-white",
+    chip: "border-rose-300 bg-white/80 text-rose-800"
+  },
+  {
+    wrap: "border-cyan-300 bg-cyan-50 text-cyan-800",
+    label: "bg-cyan-600 text-white",
+    chip: "border-cyan-300 bg-white/80 text-cyan-800"
+  }
+];
+
+const singleRelationshipStyle = {
+  wrap: "border-slate-200 bg-slate-50 text-slate-600",
+  label: "bg-slate-200 text-slate-700",
+  chip: "border-slate-200 bg-white text-slate-600"
+};
+
+function stablePaletteIndex(value: unknown) {
+  const text = typeof value === "string" ? value : cell(value);
+  let hash = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    hash = (hash * 31 + text.charCodeAt(index)) >>> 0;
+  }
+  return hash % relationshipPalette.length;
+}
+
+function relationshipGroupKey(row: AnyRow) {
+  return typeof row.strategySequenceId === "string" && row.strategySequenceId
+    ? row.strategySequenceId
+    : `single:${cell(row.id)}`;
+}
+
+function RelationshipBadge({ row }: { row: AnyRow }) {
+  const kind = relationshipKind(row);
+  const childIds = Array.isArray(row.childRuleIds) ? row.childRuleIds : [];
+  const color = row.strategySequenceId ? relationshipPalette[stablePaletteIndex(row.strategySequenceId)] : singleRelationshipStyle;
+  const copy = {
+    single: {
+      title: "Single rule",
+      detail: "No sequence"
+    },
+    sequence: {
+      title: "Sequence rule",
+      detail: `Seq ${shortId(row.strategySequenceId)}`
+    },
+    parent: {
+      title: "Parent breakout",
+      detail: `${cell(row.outcomeName)} / ${childIds.length} ${childIds.length === 1 ? "child" : "children"}`
+    },
+    child: {
+      title: "Child exit",
+      detail: `${cell(row.outcomeName)} / Parent ${shortId(row.parentRuleId)}`
+    }
+  }[kind];
+
+  return (
+    <div className={`inline-flex min-w-52 flex-col gap-1 rounded-md border px-2 py-1.5 ${color.wrap}`} title={`Sequence: ${cell(row.strategySequenceId)} | Parent: ${cell(row.parentRuleId)} | Children: ${childIds.map(shortId).join(", ") || "-"}`}>
+      <div className="flex items-center gap-2">
+        <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide ${color.label}`}>{kind}</span>
+        <span className="text-xs font-bold">{copy.title}</span>
+      </div>
+      <div className="text-[11px] font-semibold opacity-80">{copy.detail}</div>
+      {kind === "parent" && childIds.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {childIds.map((id) => (
+            <span key={String(id)} className={`rounded border px-1.5 py-0.5 font-mono text-[10px] ${color.chip}`}>
+              child {shortId(id)}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function statusRank(row: AnyRow) {
+  const status = String(row.displayStatus ?? row.status ?? "").toLowerCase();
+  const enabled = row.enabled !== false;
+  if (!enabled || status === "cancelled" || status === "disabled" || status === "failed") return 5;
+  if (status === "active" || status === "pending" || status === "inactive_waiting_for_parent") return 0;
+  if (status === "order_submitted" || status === "submitted" || status === "triggering") return 2;
+  if (status === "filled" || status === "triggered") return 4;
+  return 3;
+}
+
+function relationshipRoleRank(row: AnyRow) {
+  const kind = relationshipKind(row);
+  if (kind === "parent") return 0;
+  if (kind === "child") return 1;
+  if (kind === "sequence") return 2;
+  return 3;
+}
+
+function sortStopRows(rows: AnyRow[]) {
+  const groupRanks = new Map<string, number>();
+  rows.forEach((row) => {
+    const key = relationshipGroupKey(row);
+    groupRanks.set(key, Math.min(groupRanks.get(key) ?? 99, statusRank(row)));
+  });
+
+  return [...rows].sort((a, b) => {
+    const aKey = relationshipGroupKey(a);
+    const bKey = relationshipGroupKey(b);
+    const rankDiff = (groupRanks.get(aKey) ?? 99) - (groupRanks.get(bKey) ?? 99);
+    if (rankDiff !== 0) return rankDiff;
+    const groupDiff = aKey.localeCompare(bKey);
+    if (groupDiff !== 0) return groupDiff;
+    const roleDiff = relationshipRoleRank(a) - relationshipRoleRank(b);
+    if (roleDiff !== 0) return roleDiff;
+    const statusDiff = statusRank(a) - statusRank(b);
+    if (statusDiff !== 0) return statusDiff;
+    return cell(a.createdAt).localeCompare(cell(b.createdAt));
+  });
 }
 
 function PositionLedger({ positions }: { positions: AccountPositionSummary[] }) {
@@ -119,6 +256,7 @@ export function StopLossView({ profile, refreshKey = 0, title = "Stop / Trail / 
   const [rows, setRows] = useState<AnyRow[]>([]);
   const [clearing, setClearing] = useState(false);
   const refresh = () => api<AnyRow[]>(withProfile("/api/stop-loss", profile)).then(setRows).catch(() => undefined);
+  const sortedRows = useMemo(() => sortStopRows(rows), [rows]);
   useEffect(() => {
     refresh();
   }, [refreshKey]);
@@ -169,11 +307,11 @@ export function StopLossView({ profile, refreshKey = 0, title = "Stop / Trail / 
                 <td className="table-cell text-slate-500" colSpan={16}>No stop, trailing, or breakout rules yet.</td>
               </tr>
             )}
-            {rows.map((row) => (
+            {sortedRows.map((row) => (
               <tr key={String(row.id)}>
                 <td className="table-cell">{cell(row.ruleType)}</td>
                 <td className="table-cell">{cell(row.outcomeName)}</td>
-                <td className="table-cell text-xs font-semibold text-slate-600" title={cell(row.strategySequenceId)}>{ruleRelationship(row)}</td>
+                <td className="table-cell text-xs font-semibold"><RelationshipBadge row={row} /></td>
                 <td className="table-cell">{cell(row.triggerType)}</td>
                 <td className="table-cell">{cell(row.currentPrice)}</td>
                 <td className="table-cell">{cell(row.hardStopPrice)}</td>
