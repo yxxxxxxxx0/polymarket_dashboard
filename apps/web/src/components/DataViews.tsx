@@ -1,7 +1,7 @@
 "use client";
 
 import { Ban, CheckCircle2, Power, RefreshCw, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { api, post, withProfile, type AccountPositionSummary } from "@/lib/api";
 import { useAccount } from "./AccountProvider";
 
@@ -172,6 +172,15 @@ function sortStopRows(rows: AnyRow[]) {
   });
 }
 
+function finishedInactiveDividerIndex(rows: AnyRow[]) {
+  const groupRanks = new Map<string, number>();
+  rows.forEach((row) => {
+    const key = relationshipGroupKey(row);
+    groupRanks.set(key, Math.min(groupRanks.get(key) ?? 99, statusRank(row)));
+  });
+  return rows.findIndex((row) => (groupRanks.get(relationshipGroupKey(row)) ?? 99) >= 4);
+}
+
 function PositionLedger({ positions }: { positions: AccountPositionSummary[] }) {
   return (
     <section className="overflow-hidden rounded-md border border-slate-800 bg-[#111820] text-slate-100">
@@ -257,6 +266,7 @@ export function StopLossView({ profile, refreshKey = 0, title = "Stop / Trail / 
   const [clearing, setClearing] = useState(false);
   const refresh = () => api<AnyRow[]>(withProfile("/api/stop-loss", profile)).then(setRows).catch(() => undefined);
   const sortedRows = useMemo(() => sortStopRows(rows), [rows]);
+  const dividerIndex = useMemo(() => finishedInactiveDividerIndex(sortedRows), [sortedRows]);
   useEffect(() => {
     refresh();
   }, [refreshKey]);
@@ -307,29 +317,38 @@ export function StopLossView({ profile, refreshKey = 0, title = "Stop / Trail / 
                 <td className="table-cell text-slate-500" colSpan={16}>No stop, trailing, or breakout rules yet.</td>
               </tr>
             )}
-            {sortedRows.map((row) => (
-              <tr key={String(row.id)}>
-                <td className="table-cell">{cell(row.ruleType)}</td>
-                <td className="table-cell">{cell(row.outcomeName)}</td>
-                <td className="table-cell text-xs font-semibold"><RelationshipBadge row={row} /></td>
-                <td className="table-cell">{cell(row.triggerType)}</td>
-                <td className="table-cell">{cell(row.currentPrice)}</td>
-                <td className="table-cell">{cell(row.hardStopPrice)}</td>
-                <td className="table-cell">{cell(row.softStopPrice)}</td>
-                <td className="table-cell">{cell(row.activeStopPrice ?? row.stopPrice)}</td>
-                <td className="table-cell">{cell(row.ruleType === "BREAKOUT_BUY" || row.ruleType === "BUY_STOP" ? row.distanceToTrigger : row.distanceToStop)}</td>
-                <td className="table-cell">{cell(row.trailingPercentage)}</td>
-                <td className="table-cell" title={cell(row.effectiveRiskLabel)}>{cell(row.effectiveSlippageLimit ?? row.slippageLimit)}</td>
-                <td className="table-cell" title={cell(row.effectiveRiskLabel)}>{row.effectiveDisableMaxSpread ? "Disabled" : cell(row.effectiveMaxSpread ?? row.maxSpread)}</td>
-                <td className="table-cell">{row.gameMinute === null || row.gameMinute === undefined ? "-" : `${cell(row.gameMinute)}'`}</td>
-                <td className="table-cell">{cell(row.displayStatus ?? row.status)}</td>
-                <td className="table-cell">{row.enabled ? <CheckCircle2 className="h-4 w-4 text-buy" /> : <Ban className="h-4 w-4 text-slate-400" />}</td>
-                <td className="table-cell">
-                  <button className="icon-button" onClick={() => toggle(String(row.id), Boolean(row.enabled))} aria-label="Toggle" disabled={row.displayStatus === "inactive_waiting_for_parent"}>
-                    <Power className="h-4 w-4" />
-                  </button>
-                </td>
-              </tr>
+            {sortedRows.map((row, index) => (
+              <Fragment key={String(row.id)}>
+                {index === dividerIndex && (
+                  <tr key="finished-inactive-divider">
+                    <td className="border-y-2 border-ink bg-slate-100 px-3 py-2 text-xs font-bold uppercase tracking-wide text-slate-700" colSpan={16}>
+                      Finished / inactive orders
+                    </td>
+                  </tr>
+                )}
+                <tr key={String(row.id)}>
+                  <td className="table-cell">{cell(row.ruleType)}</td>
+                  <td className="table-cell">{cell(row.outcomeName)}</td>
+                  <td className="table-cell text-xs font-semibold"><RelationshipBadge row={row} /></td>
+                  <td className="table-cell">{cell(row.triggerType)}</td>
+                  <td className="table-cell">{cell(row.currentPrice)}</td>
+                  <td className="table-cell">{cell(row.hardStopPrice)}</td>
+                  <td className="table-cell">{cell(row.softStopPrice)}</td>
+                  <td className="table-cell">{cell(row.activeStopPrice ?? row.stopPrice)}</td>
+                  <td className="table-cell">{cell(row.ruleType === "BREAKOUT_BUY" || row.ruleType === "BUY_STOP" ? row.distanceToTrigger : row.distanceToStop)}</td>
+                  <td className="table-cell">{cell(row.trailingPercentage)}</td>
+                  <td className="table-cell" title={cell(row.effectiveRiskLabel)}>{cell(row.effectiveSlippageLimit ?? row.slippageLimit)}</td>
+                  <td className="table-cell" title={cell(row.effectiveRiskLabel)}>{row.effectiveDisableMaxSpread ? "Disabled" : cell(row.effectiveMaxSpread ?? row.maxSpread)}</td>
+                  <td className="table-cell">{row.gameMinute === null || row.gameMinute === undefined ? "-" : `${cell(row.gameMinute)}'`}</td>
+                  <td className="table-cell">{cell(row.displayStatus ?? row.status)}</td>
+                  <td className="table-cell">{row.enabled ? <CheckCircle2 className="h-4 w-4 text-buy" /> : <Ban className="h-4 w-4 text-slate-400" />}</td>
+                  <td className="table-cell">
+                    <button className="icon-button" onClick={() => toggle(String(row.id), Boolean(row.enabled))} aria-label="Toggle" disabled={row.displayStatus === "inactive_waiting_for_parent"}>
+                      <Power className="h-4 w-4" />
+                    </button>
+                  </td>
+                </tr>
+              </Fragment>
             ))}
           </tbody>
         </table>
