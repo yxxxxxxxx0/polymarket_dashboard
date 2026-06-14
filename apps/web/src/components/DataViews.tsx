@@ -142,10 +142,10 @@ export function StopLossView({ profile, refreshKey = 0, title = "Stop / Trail / 
         </div>
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[1600px] border-collapse">
+        <table className="w-full min-w-[1900px] border-collapse">
           <thead className="table-head">
             <tr>
-              {["Type", "Outcome", "Sequence", "Parent", "Children", "Trigger", "Current", "Hard", "Soft", "Active", "Distance", "Trail %", "Filled", "Avg Fill", "Activated", "Status", "Enabled", "Actions"].map((name) => (
+              {["Type", "Outcome", "Sequence", "Parent", "Children", "Trigger", "Current", "Hard", "Soft", "Active", "Distance", "Trail %", "Slip", "Max Spread", "Game Min", "Filled", "Avg Fill", "Activated", "Status", "Enabled", "Actions"].map((name) => (
                 <th key={name} className="px-3 py-2">{name}</th>
               ))}
             </tr>
@@ -153,7 +153,7 @@ export function StopLossView({ profile, refreshKey = 0, title = "Stop / Trail / 
           <tbody>
             {rows.length === 0 && (
               <tr>
-                <td className="table-cell text-slate-500" colSpan={18}>No stop, trailing, or breakout rules yet.</td>
+                <td className="table-cell text-slate-500" colSpan={21}>No stop, trailing, or breakout rules yet.</td>
               </tr>
             )}
             {rows.map((row) => (
@@ -170,6 +170,9 @@ export function StopLossView({ profile, refreshKey = 0, title = "Stop / Trail / 
                 <td className="table-cell">{cell(row.activeStopPrice ?? row.stopPrice)}</td>
                 <td className="table-cell">{cell(row.ruleType === "BREAKOUT_BUY" || row.ruleType === "BUY_STOP" ? row.distanceToTrigger : row.distanceToStop)}</td>
                 <td className="table-cell">{cell(row.trailingPercentage)}</td>
+                <td className="table-cell" title={cell(row.effectiveRiskLabel)}>{cell(row.effectiveSlippageLimit ?? row.slippageLimit)}</td>
+                <td className="table-cell" title={cell(row.effectiveRiskLabel)}>{row.effectiveDisableMaxSpread ? "Disabled" : cell(row.effectiveMaxSpread ?? row.maxSpread)}</td>
+                <td className="table-cell">{row.gameMinute === null || row.gameMinute === undefined ? "-" : `${cell(row.gameMinute)}'`}</td>
                 <td className="table-cell">{cell(row.filledShareAmount)}</td>
                 <td className="table-cell">{cell(row.averageFillPrice)}</td>
                 <td className="table-cell">{cell(row.activatedAt)}</td>

@@ -25,7 +25,7 @@ import {
 import { evaluateStopLossConfirmation } from "../apps/server/src/services/stopLossDecision";
 import { assertLiveOrderAccepted } from "../apps/server/src/services/clobService";
 import { childActivationUpdate, isFullFill, ruleStatusForDisplay, shouldActivateChildren } from "../apps/server/src/services/strategySequenceService";
-import { executionPrice, marketableBuyPrice } from "../apps/server/src/services/stopLossService";
+import { executionPrice, marketableBuyPrice, resolveEffectiveRiskSettings } from "../apps/server/src/services/stopLossService";
 import { estimateGapByGameMinute, getAggressiveBreakoutSettings, getAggressiveStopProtectionSettings, getGameMinute } from "../apps/web/src/lib/gameTime";
 
 const ofiConfig: RollingOfiConfig = {
@@ -229,6 +229,45 @@ assert.equal(getGameMinute("2026-06-14T12:00:00.000Z", new Date("2026-06-14T11:5
 assert.equal(Number(estimateGapByGameMinute(10).toFixed(2)) >= 0.12, true);
 assert.deepEqual(getAggressiveStopProtectionSettings(90), { slippageLimit: 0.25, maxSpread: 0.40, disableMaxSpread: true, label: "90'+: slippage 25c, max spread disabled or 40c" });
 assert.deepEqual(getAggressiveBreakoutSettings(88), { slippageLimit: 0.12, maxSpread: 0.25, disableMaxSpread: false, label: "88'+: breakout slippage 12c, max spread 25c" });
+assert.deepEqual(resolveEffectiveRiskSettings({
+  ruleType: RuleType.STOP_LOSS,
+  slippageLimit: 0.02,
+  maxSpread: 0.03,
+  disableMaxSpread: false
+}, null), {
+  slippageLimit: 0.02,
+  maxSpread: 0.03,
+  disableMaxSpread: false,
+  gameMinute: null,
+  dynamic: false,
+  label: "Saved rule settings"
+});
+assert.deepEqual(resolveEffectiveRiskSettings({
+  ruleType: RuleType.TRAILING_STOP,
+  slippageLimit: 0.02,
+  maxSpread: 0.03,
+  disableMaxSpread: false
+}, 90), {
+  slippageLimit: 0.25,
+  maxSpread: 0.40,
+  disableMaxSpread: true,
+  gameMinute: 90,
+  dynamic: true,
+  label: "90'+: slippage 25c, max spread disabled or 40c"
+});
+assert.deepEqual(resolveEffectiveRiskSettings({
+  ruleType: RuleType.BREAKOUT_BUY,
+  slippageLimit: 0.02,
+  maxSpread: 0.03,
+  disableMaxSpread: false
+}, 88), {
+  slippageLimit: 0.12,
+  maxSpread: 0.25,
+  disableMaxSpread: false,
+  gameMinute: 88,
+  dynamic: true,
+  label: "88'+: breakout slippage 12c, max spread 25c"
+});
 
 const executionBook = {
   tokenId: "test",

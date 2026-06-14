@@ -17,7 +17,7 @@ import { assertConfiguredToken, marketScope, outcomeForToken } from "./singleMar
 import { evaluateStopLossConfirmation } from "./stopLossDecision.js";
 import { cancelMarketOrders, placeOrder } from "./tradingService.js";
 import { handleSequenceExitFilled, markRuleOrderSubmitted, markRuleTerminal, reconcileStrategySequences, ruleStatusForDisplay } from "./strategySequenceService.js";
-import { getMarketGameTime } from "./gameTimeService.js";
+import { getAggressiveBreakoutSettings, getAggressiveStopProtectionSettings, getMarketGameTime } from "./gameTimeService.js";
 
 const confirmationTicks = new Map<string, number>();
 const recentPrices = new Map<string, Array<{ timestamp: number; price: number }>>();
@@ -26,6 +26,7 @@ const tokenExecutionLocks = new Set<string>();
 let enabledRulesCache: { marketId: string; expiresAt: number; rules: StopLossRule[] } | null = null;
 let subscribedToOrderBookUpdates = false;
 let cachedTradeMode: { value: TradeMode; expiresAt: number } | null = null;
+const gameMinuteCache = new Map<string, { expiresAt: number; gameMinute: number | null }>();
 
 function referencePrice(book: OrderBook, triggerType: StopLossTriggerType): number | null {
   switch (triggerType) {
@@ -67,6 +68,42 @@ function isExitRule(ruleType: RuleType) {
 
 function isBreakoutRule(ruleType: RuleType) {
   return ruleType === RuleType.BREAKOUT_BUY || ruleType === RuleType.BUY_STOP;
+}
+
+async function currentGameMinute(marketId: string): Promise<number | null> {
+  const now = Date.now();
+  const cached = gameMinuteCache.get(marketId);
+  if (cached && cached.expiresAt > now) return cached.gameMinute;
+  const gameTime = await getMarketGameTime(marketId).catch(() => null);
+  const gameMinute = gameTime?.kickoffTimeIso ? gameTime.gameMinute : null;
+  gameMinuteCache.set(marketId, { expiresAt: now + 1_000, gameMinute });
+  return gameMinute;
+}
+
+export function resolveEffectiveRiskSettings(rule: Pick<StopLossRule, "ruleType" | "slippageLimit" | "maxSpread" | "disableMaxSpread">, gameMinute: number | null) {
+  if (gameMinute === null) {
+    return {
+      slippageLimit: rule.slippageLimit,
+      maxSpread: rule.maxSpread,
+      disableMaxSpread: rule.disableMaxSpread,
+      gameMinute,
+      dynamic: false,
+      label: "Saved rule settings"
+    };
+  }
+
+  const preset = isBreakoutRule(rule.ruleType)
+    ? getAggressiveBreakoutSettings(gameMinute)
+    : getAggressiveStopProtectionSettings(gameMinute);
+
+  return {
+    slippageLimit: preset.slippageLimit,
+    maxSpread: preset.maxSpread,
+    disableMaxSpread: preset.disableMaxSpread,
+    gameMinute,
+    dynamic: true,
+    label: preset.label
+  };
 }
 
 function confirmationKey(ruleId: string, reason: string) {
@@ -278,6 +315,8 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
   const priceSlope = rememberPrice(rule.tokenId, ref);
   const liveRule = await updateLiveRuleState(rule, book, ref);
   if (!liveRule) return null;
+  const gameMinute = await currentGameMinute(liveRule.marketId);
+  const risk = resolveEffectiveRiskSettings(liveRule, gameMinute);
 
   if (isBreakoutRule(liveRule.ruleType)) {
     const breakoutRef = referencePrice(book, liveRule.breakoutReferenceSource ?? liveRule.triggerType);
@@ -285,7 +324,7 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
     const spread = book.spread ?? (book.bestAsk !== null && book.bestBid !== null ? book.bestAsk - book.bestBid : null);
     const rollingOfi = getCachedOfi(liveRule.tokenId)?.rollingOfi30s ?? 0;
     const shouldBuy = breakoutRef !== null && breakoutRef >= breakoutPrice;
-    const spreadOk = liveRule.maxSpread === null || liveRule.maxSpread === undefined || (spread !== null && spread <= liveRule.maxSpread);
+    const spreadOk = risk.disableMaxSpread || risk.maxSpread === null || risk.maxSpread === undefined || (spread !== null && spread <= risk.maxSpread);
     const ofiOk = !liveRule.useOfiConfirmation || rollingOfi >= (liveRule.ofiBuyThreshold ?? config.OFI_BUY_THRESHOLD);
     const slopeOk = !liveRule.usePriceSlopeConfirmation || (priceSlope !== null && priceSlope >= (liveRule.priceSlopeThreshold ?? 0));
     if (!shouldBuy) {
@@ -297,22 +336,24 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
       };
     }
     if (!spreadOk || !ofiOk || !slopeOk) {
-      return { triggered: false, referencePrice: breakoutRef, spread, rollingOfi, priceSlope, spreadOk, ofiOk, slopeOk, status: liveRule.status };
+      return { triggered: false, referencePrice: breakoutRef, spread, rollingOfi, priceSlope, spreadOk, ofiOk, slopeOk, status: liveRule.status, effectiveRisk: risk };
     }
 
     return withTokenExecutionLock(liveRule.tokenId, async () => {
       const executionBook = await freshestOrderBook(liveRule.tokenId, book);
       assertFreshEnoughForExecution(executionBook);
+      const executionRisk = resolveEffectiveRiskSettings(liveRule, await currentGameMinute(liveRule.marketId));
       const executionRef = referencePrice(executionBook, liveRule.breakoutReferenceSource ?? liveRule.triggerType);
       const executionSpread = executionBook.spread ?? (executionBook.bestAsk !== null && executionBook.bestBid !== null ? executionBook.bestAsk - executionBook.bestBid : null);
       const stillTriggered = executionRef !== null && executionRef >= breakoutPrice;
-      const stillSpreadOk = liveRule.maxSpread === null || liveRule.maxSpread === undefined || (executionSpread !== null && executionSpread <= liveRule.maxSpread);
+      const stillSpreadOk = executionRisk.disableMaxSpread || executionRisk.maxSpread === null || executionRisk.maxSpread === undefined || (executionSpread !== null && executionSpread <= executionRisk.maxSpread);
       if (!stillTriggered || !stillSpreadOk) {
         return {
           triggered: false,
           referencePrice: executionRef,
           spread: executionSpread,
           status: liveRule.status,
+          effectiveRisk: executionRisk,
           message: "Breakout skipped because the fresh orderbook no longer satisfies trigger conditions"
         };
       }
@@ -320,7 +361,7 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
       const claimedRule = await claimRuleExecution(liveRule, executionRef);
       if (!claimedRule) return null;
 
-      const price = marketableBuyPrice(claimedRule, executionBook);
+      const price = marketableBuyPrice({ ...claimedRule, slippageLimit: executionRisk.slippageLimit }, executionBook);
       const sizeUsd = claimedRule.breakoutSizeUsd ?? claimedRule.positionSize;
       const size = price && price > 0 ? sizeUsd / price : 0;
       try {
@@ -345,7 +386,7 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
             size,
             tradeMode,
             success: true,
-            message: "Breakout buy triggered",
+            message: `Breakout buy triggered (${executionRisk.label})`,
             rawResponse: JSON.stringify(response)
           }
         });
@@ -400,7 +441,7 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
   const softConfirmed = Boolean(softDecision?.priceTriggered && (!liveRule.useOfiConfirmationForSoftStop || softDecision.shouldExit));
   const triggerReason = forceExit ? "TAKE_PROFIT" : hardConfirmed ? "HARD_STOP" : softConfirmed ? "SOFT_OFI_STOP" : null;
   const spread = book.spread ?? (book.bestAsk !== null && book.bestBid !== null ? book.bestAsk - book.bestBid : null);
-  const spreadOk = liveRule.disableMaxSpread || liveRule.maxSpread === null || liveRule.maxSpread === undefined || (spread !== null && spread <= liveRule.maxSpread);
+  const spreadOk = risk.disableMaxSpread || risk.maxSpread === null || risk.maxSpread === undefined || (spread !== null && spread <= risk.maxSpread);
 
   if (!triggerReason || !spreadOk) {
     return {
@@ -415,7 +456,8 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
       softStopPrice,
       ofiConfirmed: hardDecision.ofiConfirmed || Boolean(softDecision?.ofiConfirmed),
       confirmationTicks: Math.max(hardDecision.confirmationTicks, softDecision?.confirmationTicks ?? 0),
-      requiredConfirmationTicks: config.STOP_OFI_CONFIRMATION_TICKS
+      requiredConfirmationTicks: config.STOP_OFI_CONFIRMATION_TICKS,
+      effectiveRisk: risk
     };
   }
 
@@ -425,8 +467,9 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
     const executionRef = referencePrice(executionBook, liveRule.triggerType);
     const claimedRule = await claimRuleExecution(liveRule, executionRef);
     if (!claimedRule) return null;
+    const executionRisk = resolveEffectiveRiskSettings(claimedRule, await currentGameMinute(claimedRule.marketId));
     const executionSpread = executionBook.spread ?? (executionBook.bestAsk !== null && executionBook.bestBid !== null ? executionBook.bestAsk - executionBook.bestBid : null);
-    const executionSpreadOk = claimedRule.disableMaxSpread || claimedRule.maxSpread === null || claimedRule.maxSpread === undefined || (executionSpread !== null && executionSpread <= claimedRule.maxSpread);
+    const executionSpreadOk = executionRisk.disableMaxSpread || executionRisk.maxSpread === null || executionRisk.maxSpread === undefined || (executionSpread !== null && executionSpread <= executionRisk.maxSpread);
 
     const position = claimedRule.positionId
     ? await prisma.position.findFirst({ where: { id: claimedRule.positionId, marketId } })
@@ -437,13 +480,12 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
 
     const availableSize = Math.max(0, position?.size ?? claimedRule.positionSize);
     const exitSize = Math.min(availableSize, claimedRule.positionSize, claimedRule.maxSellSize);
-    const gameMinute = (await getMarketGameTime(claimedRule.marketId).catch(() => null))?.gameMinute ?? 0;
-    const emergencyPnLProtection = claimedRule.aggressivePnLProtection || gameMinute >= 85;
-    const price = executionPrice(claimedRule, executionBook, emergencyPnLProtection);
+    const emergencyPnLProtection = executionRisk.dynamic && executionRisk.gameMinute !== null && executionRisk.gameMinute >= 85;
+    const price = executionPrice({ ...claimedRule, slippageLimit: executionRisk.slippageLimit }, executionBook, emergencyPnLProtection);
 
     try {
       if (exitSize <= 0) throw new Error("No available position size to close");
-      if (!executionSpreadOk) throw new Error(`Spread ${executionSpread?.toFixed(3) ?? "unknown"} exceeds max spread ${claimedRule.maxSpread}`);
+      if (!executionSpreadOk) throw new Error(`Spread ${executionSpread?.toFixed(3) ?? "unknown"} exceeds effective max spread ${executionRisk.maxSpread}`);
 
       let response: unknown;
       if (claimedRule.executionType === StopLossExecutionType.CANCEL_ONLY) {
@@ -472,7 +514,7 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
           size: exitSize,
           tradeMode,
           success: true,
-          message: `${triggerReason === "TAKE_PROFIT" ? "Take profit" : triggerReason === "SOFT_OFI_STOP" ? "Soft OFI stop" : claimedRule.ruleType === RuleType.TRAILING_STOP ? "Trailing hard stop" : "Hard stop"} triggered`,
+          message: `${triggerReason === "TAKE_PROFIT" ? "Take profit" : triggerReason === "SOFT_OFI_STOP" ? "Soft OFI stop" : claimedRule.ruleType === RuleType.TRAILING_STOP ? "Trailing hard stop" : "Hard stop"} triggered (${executionRisk.label})`,
           rawResponse: JSON.stringify(response)
         }
       });
@@ -573,6 +615,7 @@ export async function listStopLossRulesWithLiveState() {
     const activeStopPrice = rule.stopPrice;
     const distanceToStop = livePrice === null ? null : livePrice - activeStopPrice;
     const distanceToTrigger = livePrice === null ? null : activeStopPrice - livePrice;
+    const effectiveRisk = resolveEffectiveRiskSettings(rule, await currentGameMinute(rule.marketId));
     return {
       ...rule,
       currentPrice: livePrice,
@@ -581,7 +624,12 @@ export async function listStopLossRulesWithLiveState() {
       distanceToTrigger: isBreakoutRule(rule.ruleType) ? distanceToTrigger : null,
       profitLocked: rule.ruleType === RuleType.TRAILING_STOP ? activeStopPrice > rule.entryPrice : null,
       displayStatus: ruleStatusForDisplay(rule.status),
-      childRuleIds: rule.childRules.map((child) => child.id)
+      childRuleIds: rule.childRules.map((child) => child.id),
+      gameMinute: effectiveRisk.gameMinute,
+      effectiveSlippageLimit: effectiveRisk.slippageLimit,
+      effectiveMaxSpread: effectiveRisk.disableMaxSpread ? null : effectiveRisk.maxSpread,
+      effectiveDisableMaxSpread: effectiveRisk.disableMaxSpread,
+      effectiveRiskLabel: effectiveRisk.label
     };
   }));
 }
