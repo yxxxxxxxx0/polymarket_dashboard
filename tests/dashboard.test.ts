@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { OrderSide } from "@prisma/client";
+import { OrderSide, RuleType, StopLossStatus } from "@prisma/client";
 import {
   calculateBreakoutPercentage,
   calculateBuyTriggerPrice,
@@ -24,6 +24,9 @@ import {
 } from "../apps/server/src/services/ofiLogic";
 import { evaluateStopLossConfirmation } from "../apps/server/src/services/stopLossDecision";
 import { assertLiveOrderAccepted } from "../apps/server/src/services/clobService";
+import { childActivationUpdate, isFullFill, ruleStatusForDisplay, shouldActivateChildren } from "../apps/server/src/services/strategySequenceService";
+import { executionPrice, marketableBuyPrice } from "../apps/server/src/services/stopLossService";
+import { estimateGapByGameMinute, getAggressiveBreakoutSettings, getAggressiveStopProtectionSettings, getGameMinute } from "../apps/web/src/lib/gameTime";
 
 const ofiConfig: RollingOfiConfig = {
   windowSeconds: 10,
@@ -220,5 +223,77 @@ assert.throws(
   /not enough balance/
 );
 assert.equal(assertLiveOrderAccepted({ success: true, orderID: "0xabc", status: "open" }).orderID, "0xabc");
+
+assert.equal(getGameMinute("2026-06-14T12:00:00.000Z", new Date("2026-06-14T12:30:00.000Z")), 30);
+assert.equal(getGameMinute("2026-06-14T12:00:00.000Z", new Date("2026-06-14T11:59:00.000Z")), 0);
+assert.equal(Number(estimateGapByGameMinute(10).toFixed(2)) >= 0.12, true);
+assert.deepEqual(getAggressiveStopProtectionSettings(90), { slippageLimit: 0.25, maxSpread: 0.40, disableMaxSpread: true, label: "90'+: slippage 25c, max spread disabled or 40c" });
+assert.deepEqual(getAggressiveBreakoutSettings(88), { slippageLimit: 0.12, maxSpread: 0.25, disableMaxSpread: false, label: "88'+: breakout slippage 12c, max spread 25c" });
+
+const executionBook = {
+  tokenId: "test",
+  bids: [],
+  asks: [],
+  bestBid: 0.44,
+  bestAsk: 0.61,
+  spread: 0.17,
+  midpoint: 0.525,
+  depthImbalance: 0,
+  lastTradePrice: null,
+  lastUpdateTime: "now"
+};
+assert.equal(executionPrice({ executionType: "MARKETABLE_LIMIT", stopPrice: 0.55, slippageLimit: 0.04 }, executionBook), 0.51);
+assert.equal(executionPrice({ executionType: "MARKETABLE_LIMIT", stopPrice: 0.55, slippageLimit: 0.04 }, executionBook, true), 0.40);
+assert.equal(marketableBuyPrice({ stopPrice: 0.55, slippageLimit: 0.05 }, executionBook), 0.66);
+
+assert.equal(ruleStatusForDisplay(StopLossStatus.ARMED), "active");
+assert.equal(ruleStatusForDisplay(StopLossStatus.ORDER_SUBMITTED), "order_submitted");
+assert.equal(ruleStatusForDisplay(StopLossStatus.FILLED), "filled");
+assert.equal(ruleStatusForDisplay(StopLossStatus.CANCELLED), "cancelled");
+assert.equal(ruleStatusForDisplay(StopLossStatus.FAILED), "failed");
+assert.equal(ruleStatusForDisplay(StopLossStatus.INACTIVE_WAITING_FOR_PARENT), "inactive_waiting_for_parent");
+assert.equal(isFullFill({ filledShareAmount: 0, averageFillPrice: 0.62, expectedShareAmount: 25, fullFill: false }), false);
+assert.equal(isFullFill({ filledShareAmount: 12, averageFillPrice: 0.62, expectedShareAmount: 25 }), false);
+assert.equal(isFullFill({ filledShareAmount: 25, averageFillPrice: 0.62, expectedShareAmount: 25 }), true);
+assert.equal(shouldActivateChildren({ activationCondition: "FULL_FILL_ONLY", minFilledShares: null }, { filledShareAmount: 12, averageFillPrice: 0.62, expectedShareAmount: 25 }), false);
+assert.equal(shouldActivateChildren({ activationCondition: "PARTIAL_FILL_ALLOWED", minFilledShares: null }, { filledShareAmount: 12, averageFillPrice: 0.62, expectedShareAmount: 25 }), true);
+assert.equal(shouldActivateChildren({ activationCondition: "MIN_FILLED_SHARES", minFilledShares: 15 }, { filledShareAmount: 12, averageFillPrice: 0.62, expectedShareAmount: 25 }), false);
+assert.equal(shouldActivateChildren({ activationCondition: "MIN_FILLED_SHARES", minFilledShares: 15 }, { filledShareAmount: 15, averageFillPrice: 0.62, expectedShareAmount: 25 }), true);
+
+const submittedParentStatus = ruleStatusForDisplay(StopLossStatus.ORDER_SUBMITTED);
+assert.equal(submittedParentStatus, "order_submitted");
+assert.notEqual(submittedParentStatus, "filled");
+
+const stopActivation = childActivationUpdate({
+  ruleType: RuleType.STOP_LOSS,
+  stopPrice: 0.50,
+  stopPercentage: 8,
+  trailingPercentage: null,
+  referencePrice: null
+}, {
+  filledShareAmount: 25,
+  averageFillPrice: 0.625,
+  expectedShareAmount: 25
+});
+assert.equal(stopActivation.positionSize, 25);
+assert.equal(stopActivation.maxSellSize, 25);
+assert.equal(Number(stopActivation.stopPrice.toFixed(4)), 0.575);
+assert.equal(stopActivation.status, StopLossStatus.ACTIVE);
+
+const trailingActivation = childActivationUpdate({
+  ruleType: RuleType.TRAILING_STOP,
+  stopPrice: 0.50,
+  stopPercentage: 10,
+  trailingPercentage: 10,
+  referencePrice: 0.70
+}, {
+  filledShareAmount: 25,
+  averageFillPrice: 0.625,
+  expectedShareAmount: 25
+});
+assert.equal(trailingActivation.positionSize, 25);
+assert.equal(trailingActivation.maxSellSize, 25);
+assert.equal(Number(trailingActivation.stopPrice.toFixed(4)), 0.63);
+assert.equal(trailingActivation.highestPriceSinceEntry, 0.70);
 
 console.log("dashboard behavior tests passed");

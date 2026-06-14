@@ -42,6 +42,16 @@ const stopLossBaseSchema = z.object({
   usePriceSlopeConfirmation: z.coerce.boolean().default(false).optional(),
   priceSlopeThreshold: z.coerce.number().optional(),
   maxSpread: z.coerce.number().min(0).max(1).optional(),
+  disableMaxSpread: z.coerce.boolean().default(false).optional(),
+  aggressivePnLProtection: z.coerce.boolean().default(false).optional(),
+  aggressiveBreakout: z.coerce.boolean().default(false).optional(),
+  strategySequenceId: z.string().optional(),
+  parentRuleId: z.string().optional(),
+  activationCondition: z.string().optional(),
+  minFilledShares: z.coerce.number().positive().optional(),
+  cancelAfterSeconds: z.coerce.number().int().positive().optional(),
+  enabled: z.coerce.boolean().optional(),
+  status: z.string().optional().transform((value) => value?.toUpperCase()).pipe(z.nativeEnum(StopLossStatus).optional()),
   breakevenEnabled: z.coerce.boolean().default(false).optional(),
   breakevenTriggerPrice: z.coerce.number().min(0).max(1).optional(),
   breakevenBuffer: z.coerce.number().min(0).max(1).default(0).optional(),
@@ -105,11 +115,13 @@ stopLossRouter.delete("/", asyncHandler(async (_req, res) => {
     ? await prisma.stopLossTriggerLog.deleteMany({ where: { ruleId: { in: ruleIds } } })
     : { count: 0 };
   const deletedRules = await prisma.stopLossRule.deleteMany({ where: { marketId } });
+  const deletedSequences = await prisma.strategySequence.deleteMany({ where: { marketId } });
   invalidateStopLossRuleCache(marketId);
   res.json({
     marketId,
     deletedRules: deletedRules.count,
-    deletedTriggerLogs: triggerLogs.count
+    deletedTriggerLogs: triggerLogs.count,
+    deletedSequences: deletedSequences.count
   });
 }));
 
@@ -169,7 +181,7 @@ stopLossRouter.post("/:id/disable", asyncHandler(async (req, res) => {
   const existing = await prisma.stopLossRule.findFirstOrThrow({ where: { id, marketId } });
   const updated = await prisma.stopLossRule.update({
     where: { id: existing.id },
-    data: { enabled: false, status: StopLossStatus.DISABLED }
+    data: { enabled: false, status: StopLossStatus.CANCELLED, cancelledAt: new Date() }
   });
   invalidateStopLossRuleCache(marketId);
   res.json(updated);

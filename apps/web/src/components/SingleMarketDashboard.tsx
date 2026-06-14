@@ -1,6 +1,6 @@
 "use client";
 
-import { CheckCircle2, ChevronsUpDown, Plus, RefreshCw, ShieldPlus, Trash2, TrendingUp, Zap } from "lucide-react";
+import { ArrowRight, CheckCircle2, ChevronsUpDown, Plus, RefreshCw, ShieldPlus, Trash2, TrendingUp, Zap } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api, post, streamUrl, withProfile, type ActiveMarketConfig, type MarketStats, type MarketSummary, type SavedMarketConfig } from "@/lib/api";
 import { MarketPriceChart } from "./MarketPriceChart";
@@ -9,9 +9,11 @@ import { OrderBookProvider } from "./OrderBookProvider";
 import { OrderTicket } from "./OrderTicket";
 import { PositionSummary } from "./PositionSummary";
 import { StopLossForm, type RuleMode } from "./StopLossForm";
+import { StrategySequenceBuilder } from "./StrategySequenceBuilder";
 import { BuyingPowerSummary } from "./BuyingPowerSummary";
 import { StopLossView } from "./DataViews";
 import { useAccount } from "./AccountProvider";
+import { GameTimePanel } from "./GameTimePanel";
 
 export function SingleMarketDashboard({ profile = "football", marketLabel = "Market" }: { profile?: string; marketLabel?: string }) {
   const { account, refreshAccount } = useAccount();
@@ -19,6 +21,7 @@ export function SingleMarketDashboard({ profile = "football", marketLabel = "Mar
   const [outcomeIndex, setOutcomeIndex] = useState(0);
   const [positionAutoSelected, setPositionAutoSelected] = useState(false);
   const [ruleMode, setRuleMode] = useState<RuleMode | null>(null);
+  const [sequenceBuilderOpen, setSequenceBuilderOpen] = useState(false);
   const [rulesRefreshKey, setRulesRefreshKey] = useState(0);
   const [notice, setNotice] = useState("");
   const [marketPanelOpen, setMarketPanelOpen] = useState(false);
@@ -30,6 +33,7 @@ export function SingleMarketDashboard({ profile = "football", marketLabel = "Mar
   const [selectedSavedMarketId, setSelectedSavedMarketId] = useState("");
   const [savedMarketsLoading, setSavedMarketsLoading] = useState(false);
   const [newMarketOpen, setNewMarketOpen] = useState(false);
+  const [gameMinute, setGameMinute] = useState(0);
 
   async function loadMarket() {
     setMarketLoadError("");
@@ -287,7 +291,12 @@ export function SingleMarketDashboard({ profile = "football", marketLabel = "Mar
 
           <section className="space-y-4">
             <BuyingPowerSummary tokenId={tokenId} />
+            <GameTimePanel marketId={market.id} onGameMinuteChange={setGameMinute} />
             <OrderTicket profile={profile} marketId={market.id} conditionId={market.conditionId} tokenId={tokenId} outcomeName={outcome} />
+            <button className="primary-button w-full" onClick={() => setSequenceBuilderOpen(true)}>
+              <ArrowRight className="h-4 w-4" />
+              Sequence
+            </button>
             <div className="grid grid-cols-3 gap-2">
               <button className="primary-button w-full" onClick={() => setRuleMode("STOP_LOSS")}>
                 <ShieldPlus className="h-4 w-4" />
@@ -313,7 +322,20 @@ export function SingleMarketDashboard({ profile = "football", marketLabel = "Mar
             outcomeName={outcome}
             profile={profile}
             initialMode={ruleMode}
+            gameMinute={gameMinute}
             onClose={() => setRuleMode(null)}
+            onSaved={handleRuleSaved}
+          />
+        )}
+        {sequenceBuilderOpen && (
+          <StrategySequenceBuilder
+            marketId={market.id}
+            conditionId={market.conditionId}
+            tokenId={tokenId}
+            outcomeName={outcome}
+            profile={profile}
+            gameMinute={gameMinute}
+            onClose={() => setSequenceBuilderOpen(false)}
             onSaved={handleRuleSaved}
           />
         )}

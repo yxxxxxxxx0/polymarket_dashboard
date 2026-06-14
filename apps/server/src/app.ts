@@ -11,6 +11,7 @@ import { killSwitchRouter } from "./routes/killSwitch.js";
 import { settingsRouter } from "./routes/settings.js";
 import { singleMarketRouter, streamRouter } from "./routes/singleMarket.js";
 import { stopLossRouter } from "./routes/stopLoss.js";
+import { strategySequenceRouter } from "./routes/strategySequences.js";
 import { tradingRouter } from "./routes/trading.js";
 import { withMarketProfile } from "./services/activeMarketService.js";
 
@@ -39,6 +40,7 @@ app.use("/api", profiled(singleMarketRouter));
 app.use("/api/stream", profiled(streamRouter));
 app.use("/api", profiled(tradingRouter));
 app.use("/api/stop-loss", profiled(stopLossRouter));
+app.use("/api/strategy-sequences", profiled(strategySequenceRouter));
 app.use("/api/settings", settingsRouter);
 app.use("/api/kill-switch", killSwitchRouter);
 

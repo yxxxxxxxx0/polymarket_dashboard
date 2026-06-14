@@ -60,6 +60,15 @@ export type SavedMarketConfig = ActiveMarketConfig & {
   sourceIndex: number;
 };
 
+export type GameTimeSetting = {
+  marketId: string;
+  kickoffTimeIso: string | null;
+  timezone: string;
+  gameMinute: number;
+  status: "Waiting for kickoff" | "Live" | "Finished" | string;
+  estimatedGap: number;
+};
+
 export type OrderBook = {
   tokenId: string;
   market?: string;
@@ -141,6 +150,52 @@ export type AccountSummaryResponse = {
   outcomes: AccountOutcomeSummary[];
   positions: AccountPositionSummary[];
   updatedAt: string;
+};
+
+export type RuleDisplayStatus =
+  | "pending"
+  | "active"
+  | "order_submitted"
+  | "filled"
+  | "cancelled"
+  | "failed"
+  | "inactive_waiting_for_parent";
+
+export type StrategySequenceRule = {
+  id: string;
+  ruleType: "STOP_LOSS" | "TRAILING_STOP" | "BUY_STOP" | "BREAKOUT_BUY";
+  strategySequenceId: string | null;
+  parentRuleId: string | null;
+  childRuleIds: string[];
+  activationCondition: string | null;
+  outcomeName: string;
+  positionSize: number;
+  entryPrice: number;
+  stopPrice: number;
+  trailingPercentage: number | null;
+  breakoutPrice: number | null;
+  filledShareAmount: number | null;
+  averageFillPrice: number | null;
+  activatedAt: string | null;
+  filledAt: string | null;
+  cancelledAt: string | null;
+  status: string;
+  displayStatus: RuleDisplayStatus;
+  enabled: boolean;
+};
+
+export type StrategySequence = {
+  id: string;
+  marketId: string;
+  conditionId: string | null;
+  tokenId: string;
+  outcomeName: string;
+  status: string;
+  displayStatus: RuleDisplayStatus;
+  activationCondition: string;
+  createdAt: string;
+  updatedAt: string;
+  rules: StrategySequenceRule[];
 };
 
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {

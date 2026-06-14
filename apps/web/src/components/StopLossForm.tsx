@@ -20,6 +20,7 @@ import {
   validateStopLoss,
   type StopLossTrigger
 } from "@/lib/stopLossMath";
+import { getAggressiveBreakoutSettings, getAggressiveStopProtectionSettings } from "@/lib/gameTime";
 
 export type RuleMode = "STOP_LOSS" | "TRAILING_STOP" | "BREAKOUT_BUY";
 
@@ -58,13 +59,14 @@ function ModeButton({ active, icon: Icon, label, onClick }: {
   );
 }
 
-export function StopLossForm({ profile, marketId, conditionId, tokenId, outcomeName, initialMode = "STOP_LOSS", onClose, onSaved }: {
+export function StopLossForm({ profile, marketId, conditionId, tokenId, outcomeName, initialMode = "STOP_LOSS", gameMinute = 0, onClose, onSaved }: {
   profile?: string;
   marketId: string;
   conditionId?: string;
   tokenId: string;
   outcomeName: string;
   initialMode?: RuleMode;
+  gameMinute?: number;
   onClose: () => void;
   onSaved?: (message: string) => void;
 }) {
@@ -96,6 +98,9 @@ export function StopLossForm({ profile, marketId, conditionId, tokenId, outcomeN
   const [usePriceSlopeConfirmation, setUsePriceSlopeConfirmation] = useState(false);
   const [priceSlopeThreshold, setPriceSlopeThreshold] = useState("0");
   const [maxSpread, setMaxSpread] = useState("0.03");
+  const [disableMaxSpread, setDisableMaxSpread] = useState(false);
+  const [aggressivePnLProtection, setAggressivePnLProtection] = useState(false);
+  const [aggressiveBreakout, setAggressiveBreakout] = useState(false);
   const [message, setMessage] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [lastEdited, setLastEdited] = useState<"stopPrice" | "stopPercentage" | "trailingStopPrice" | "trailingPercentage" | "buyTriggerPrice" | "breakoutPercentage">("stopPercentage");
@@ -197,6 +202,29 @@ export function StopLossForm({ profile, marketId, conditionId, tokenId, outcomeN
   const distanceToStop = Number(currentPrice) - Number(stopPrice);
   const distanceToTrigger = Number(stopPrice) - Number(currentPrice);
   const profitLocked = isProfitLocked(Number(entryPrice), Number(stopPrice));
+  const stopPreset = getAggressiveStopProtectionSettings(gameMinute);
+  const breakoutPreset = getAggressiveBreakoutSettings(gameMinute);
+
+  function applyGameTimeStopSettings() {
+    setSlippageLimit(String(stopPreset.slippageLimit));
+    setMaxSpread(String(stopPreset.maxSpread));
+    setDisableMaxSpread(stopPreset.disableMaxSpread);
+    setExecutionType("MARKETABLE_LIMIT");
+    setTriggerType("BEST_BID");
+    setUseOfiConfirmationForHardStop(false);
+    setAggressivePnLProtection(true);
+    setMessage(`Aggressive PnL Protection applied: ${stopPreset.label}`);
+  }
+
+  function applyGameTimeBreakoutSettings() {
+    setSlippageLimit(String(breakoutPreset.slippageLimit));
+    setMaxSpread(String(breakoutPreset.maxSpread));
+    setDisableMaxSpread(false);
+    setExecutionType("MARKETABLE_LIMIT");
+    setTriggerType("BEST_ASK");
+    setAggressiveBreakout(true);
+    setMessage(`Aggressive Breakout Buy applied: ${breakoutPreset.label}`);
+  }
 
   async function save() {
     if (isSaving) return;
@@ -235,7 +263,10 @@ export function StopLossForm({ profile, marketId, conditionId, tokenId, outcomeN
         ofiBuyThreshold: mode === "BREAKOUT_BUY" ? ofiBuyThreshold : undefined,
         usePriceSlopeConfirmation: mode === "BREAKOUT_BUY" ? usePriceSlopeConfirmation : undefined,
         priceSlopeThreshold: mode === "BREAKOUT_BUY" ? priceSlopeThreshold : undefined,
-        maxSpread: mode === "BREAKOUT_BUY" && maxSpread ? maxSpread : undefined,
+        maxSpread: maxSpread ? maxSpread : undefined,
+        disableMaxSpread,
+        aggressivePnLProtection: mode !== "BREAKOUT_BUY" ? aggressivePnLProtection : false,
+        aggressiveBreakout: mode === "BREAKOUT_BUY" ? aggressiveBreakout : false,
         breakevenEnabled: mode === "TRAILING_STOP" ? breakevenEnabled : false,
         breakevenTriggerPrice: mode === "TRAILING_STOP" && breakevenTriggerPrice ? breakevenTriggerPrice : undefined,
         breakevenBuffer: mode === "TRAILING_STOP" ? breakevenBuffer : undefined,
@@ -320,6 +351,21 @@ export function StopLossForm({ profile, marketId, conditionId, tokenId, outcomeN
 
           {mode !== "BREAKOUT_BUY" && (
             <>
+              <div className="rounded-md border border-line bg-panel p-3 text-xs sm:col-span-2">
+                <div className="mb-2 font-semibold">Aggressive PnL Protection</div>
+                <div className="whitespace-pre-line leading-5 text-slate-600">{`Suggested football stop-loss settings:
+
+0'-75':  slippage 6c,  max spread 10c
+75'-88': slippage 10c, max spread 15c
+88'+:    slippage 20c, max spread 35c
+90'+:    slippage 25c, max spread disabled or 40c
+
+Purpose: protect PnL during football price gaps. This is less conservative and prioritizes getting out over perfect execution.`}</div>
+                <button className="secondary-button mt-3 w-full" onClick={applyGameTimeStopSettings} type="button">
+                  Apply Game-Time Stop Settings
+                </button>
+                <div className="mt-2 text-[11px] font-semibold text-slate-500">Minute {gameMinute}' preset: {stopPreset.label}</div>
+              </div>
               <label className="flex items-center gap-2 rounded-md border border-line bg-panel p-2 text-xs font-semibold text-slate-700">
                 <input type="checkbox" checked={softStopEnabled} onChange={(event) => setSoftStopEnabled(event.target.checked)} />
                 Soft OFI stop
@@ -339,9 +385,26 @@ export function StopLossForm({ profile, marketId, conditionId, tokenId, outcomeN
           )}
 
           {mode === "BREAKOUT_BUY" ? (
-            <Field label="Stake amount" help="USD amount to use when the breakout triggers.">
-              <input className="control w-full" value={stakeAmount} onChange={(event) => setStakeAmount(event.target.value)} />
-            </Field>
+            <>
+              <div className="rounded-md border border-line bg-panel p-3 text-xs sm:col-span-2">
+                <div className="mb-2 font-semibold">Aggressive Breakout Buy</div>
+                <div className="whitespace-pre-line leading-5 text-slate-600">{`Suggested football breakout-buy settings:
+
+0'-75':  slippage 6c,  max spread 10c
+75'-88': slippage 8c,  max spread 15c
+88'+:    slippage 12c, max spread 25c
+90'+:    slippage 15c, max spread 30c
+
+Purpose: improve fill probability during football breakout gaps, but avoid chasing as aggressively as stop-loss exits.`}</div>
+                <button className="secondary-button mt-3 w-full" onClick={applyGameTimeBreakoutSettings} type="button">
+                  Apply Game-Time Breakout Settings
+                </button>
+                <div className="mt-2 text-[11px] font-semibold text-slate-500">Minute {gameMinute}' preset: {breakoutPreset.label}</div>
+              </div>
+              <Field label="Stake amount" help="USD amount to use when the breakout triggers.">
+                <input className="control w-full" value={stakeAmount} onChange={(event) => setStakeAmount(event.target.value)} />
+              </Field>
+            </>
           ) : (
             <>
               <Field label="Position size" help="Total shares/contracts currently held.">
@@ -373,6 +436,14 @@ export function StopLossForm({ profile, marketId, conditionId, tokenId, outcomeN
           <Field label="Slippage limit" help="Maximum price cushion. Example: 0.01 means one cent." wide>
             <input className="control w-full" value={slippageLimit} onChange={(event) => setSlippageLimit(event.target.value)} />
           </Field>
+
+          <Field label="Max spread" help="Skip execution if best ask minus best bid is wider than this." wide>
+            <input className="control w-full" value={maxSpread} onChange={(event) => setMaxSpread(event.target.value)} disabled={disableMaxSpread} />
+          </Field>
+          <label className="flex items-center gap-2 rounded-md border border-line bg-panel p-2 text-xs font-semibold text-slate-700 sm:col-span-2">
+            <input type="checkbox" checked={disableMaxSpread} onChange={(event) => setDisableMaxSpread(event.target.checked)} />
+            Disable max spread check
+          </label>
 
           {mode === "TRAILING_STOP" && (
             <>
@@ -407,9 +478,6 @@ export function StopLossForm({ profile, marketId, conditionId, tokenId, outcomeN
               </label>
               <Field label="Price slope threshold" help="Minimum price change per second over recent updates.">
                 <input className="control w-full" value={priceSlopeThreshold} onChange={(event) => setPriceSlopeThreshold(event.target.value)} />
-              </Field>
-              <Field label="Max spread" help="Skip breakout buys if best ask minus best bid is wider than this.">
-                <input className="control w-full" value={maxSpread} onChange={(event) => setMaxSpread(event.target.value)} />
               </Field>
             </>
           )}

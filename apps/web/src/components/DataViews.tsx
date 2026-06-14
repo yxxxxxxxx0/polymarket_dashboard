@@ -142,10 +142,10 @@ export function StopLossView({ profile, refreshKey = 0, title = "Stop / Trail / 
         </div>
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[1280px] border-collapse">
+        <table className="w-full min-w-[1600px] border-collapse">
           <thead className="table-head">
             <tr>
-              {["Type", "Outcome", "Trigger", "Current", "Hard", "Soft", "Active", "Distance", "Trail %", "Highest", "Last Eval", "Updated", "Status", "Enabled", "Actions"].map((name) => (
+              {["Type", "Outcome", "Sequence", "Parent", "Children", "Trigger", "Current", "Hard", "Soft", "Active", "Distance", "Trail %", "Filled", "Avg Fill", "Activated", "Status", "Enabled", "Actions"].map((name) => (
                 <th key={name} className="px-3 py-2">{name}</th>
               ))}
             </tr>
@@ -153,13 +153,16 @@ export function StopLossView({ profile, refreshKey = 0, title = "Stop / Trail / 
           <tbody>
             {rows.length === 0 && (
               <tr>
-                <td className="table-cell text-slate-500" colSpan={15}>No stop, trailing, or breakout rules yet.</td>
+                <td className="table-cell text-slate-500" colSpan={18}>No stop, trailing, or breakout rules yet.</td>
               </tr>
             )}
             {rows.map((row) => (
               <tr key={String(row.id)}>
                 <td className="table-cell">{cell(row.ruleType)}</td>
                 <td className="table-cell">{cell(row.outcomeName)}</td>
+                <td className="table-cell font-mono text-[11px]">{cell(row.strategySequenceId)}</td>
+                <td className="table-cell font-mono text-[11px]">{cell(row.parentRuleId)}</td>
+                <td className="table-cell font-mono text-[11px]">{cell(row.childRuleIds)}</td>
                 <td className="table-cell">{cell(row.triggerType)}</td>
                 <td className="table-cell">{cell(row.currentPrice)}</td>
                 <td className="table-cell">{cell(row.hardStopPrice)}</td>
@@ -167,13 +170,13 @@ export function StopLossView({ profile, refreshKey = 0, title = "Stop / Trail / 
                 <td className="table-cell">{cell(row.activeStopPrice ?? row.stopPrice)}</td>
                 <td className="table-cell">{cell(row.ruleType === "BREAKOUT_BUY" || row.ruleType === "BUY_STOP" ? row.distanceToTrigger : row.distanceToStop)}</td>
                 <td className="table-cell">{cell(row.trailingPercentage)}</td>
-                <td className="table-cell">{cell(row.highestPriceSinceEntry)}</td>
-                <td className="table-cell">{cell(row.lastEvaluatedPrice)}</td>
-                <td className="table-cell">{cell(row.lastUpdatedAt)}</td>
-                <td className="table-cell">{cell(row.status)}</td>
+                <td className="table-cell">{cell(row.filledShareAmount)}</td>
+                <td className="table-cell">{cell(row.averageFillPrice)}</td>
+                <td className="table-cell">{cell(row.activatedAt)}</td>
+                <td className="table-cell">{cell(row.displayStatus ?? row.status)}</td>
                 <td className="table-cell">{row.enabled ? <CheckCircle2 className="h-4 w-4 text-buy" /> : <Ban className="h-4 w-4 text-slate-400" />}</td>
                 <td className="table-cell">
-                  <button className="icon-button" onClick={() => toggle(String(row.id), Boolean(row.enabled))} aria-label="Toggle">
+                  <button className="icon-button" onClick={() => toggle(String(row.id), Boolean(row.enabled))} aria-label="Toggle" disabled={row.displayStatus === "inactive_waiting_for_parent"}>
                     <Power className="h-4 w-4" />
                   </button>
                 </td>

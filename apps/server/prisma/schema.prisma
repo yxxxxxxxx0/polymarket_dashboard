@@ -38,6 +38,11 @@ enum RuleType {
 }
 
 enum StopLossStatus {
+  PENDING
+  ACTIVE
+  ORDER_SUBMITTED
+  CANCELLED
+  INACTIVE_WAITING_FOR_PARENT
   ENABLED
   DISABLED
   ARMED
@@ -46,6 +51,23 @@ enum StopLossStatus {
   SUBMITTED
   FILLED
   FAILED
+}
+
+model StrategySequence {
+  id          String   @id @default(cuid())
+  marketId    String
+  conditionId String?
+  tokenId     String
+  outcomeName String
+  status      StopLossStatus @default(PENDING)
+  activationCondition String @default("PARENT_FULL_FILL")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  rules StopLossRule[]
+
+  @@index([marketId])
+  @@index([status])
 }
 
 model Position {
@@ -91,6 +113,11 @@ model OpenOrder {
 model StopLossRule {
   id            String                @id @default(cuid())
   ruleType      RuleType              @default(STOP_LOSS)
+  strategySequenceId String?
+  parentRuleId String?
+  activationCondition String?
+  minFilledShares Float?
+  cancelAfterSeconds Int?
   marketId      String
   conditionId   String?
   tokenId       String
@@ -119,6 +146,9 @@ model StopLossRule {
   usePriceSlopeConfirmation Boolean @default(false)
   priceSlopeThreshold Float?
   maxSpread Float?
+  disableMaxSpread Boolean @default(false)
+  aggressivePnLProtection Boolean @default(false)
+  aggressiveBreakout Boolean @default(false)
   breakevenEnabled Boolean @default(false)
   breakevenTriggerPrice Float?
   breakevenBuffer Float @default(0)
@@ -126,6 +156,11 @@ model StopLossRule {
   triggeredPrice Float?
   orderSubmitted Boolean @default(false)
   orderId       String?
+  filledShareAmount Float?
+  averageFillPrice Float?
+  activatedAt   DateTime?
+  filledAt      DateTime?
+  cancelledAt   DateTime?
   triggerType   StopLossTriggerType
   executionType StopLossExecutionType
   slippageLimit Float
@@ -138,10 +173,15 @@ model StopLossRule {
   updatedAt     DateTime              @updatedAt
 
   position Position? @relation(fields: [positionId], references: [id])
+  strategySequence StrategySequence? @relation(fields: [strategySequenceId], references: [id], onDelete: SetNull)
+  parentRule StopLossRule? @relation("RuleSequenceChildren", fields: [parentRuleId], references: [id], onDelete: SetNull)
+  childRules StopLossRule[] @relation("RuleSequenceChildren")
   triggerLogs StopLossTriggerLog[]
 
   @@index([tokenId])
   @@index([status])
+  @@index([strategySequenceId])
+  @@index([parentRuleId])
 }
 
 model StopLossTriggerLog {

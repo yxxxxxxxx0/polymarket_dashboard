@@ -16,6 +16,8 @@ import { getAppSettings } from "./settingsService.js";
 import { assertConfiguredToken, marketScope, outcomeForToken } from "./singleMarketService.js";
 import { evaluateStopLossConfirmation } from "./stopLossDecision.js";
 import { cancelMarketOrders, placeOrder } from "./tradingService.js";
+import { handleSequenceExitFilled, markRuleOrderSubmitted, markRuleTerminal, reconcileStrategySequences, ruleStatusForDisplay } from "./strategySequenceService.js";
+import { getMarketGameTime } from "./gameTimeService.js";
 
 const confirmationTicks = new Map<string, number>();
 const recentPrices = new Map<string, Array<{ timestamp: number; price: number }>>();
@@ -38,17 +40,21 @@ function referencePrice(book: OrderBook, triggerType: StopLossTriggerType): numb
   }
 }
 
-function executionPrice(rule: {
+export function executionPrice(rule: {
   executionType: StopLossExecutionType;
   stopPrice: number;
   slippageLimit: number;
-}, book: OrderBook): number | null {
+}, book: OrderBook, emergencyPnLProtection = false): number | null {
   const bestBid = book.bestBid;
   if (rule.executionType === StopLossExecutionType.CANCEL_ONLY) return null;
   if (bestBid === null) return null;
 
   if (rule.executionType === StopLossExecutionType.STRICT_LIMIT) {
     return bestBid >= rule.stopPrice ? rule.stopPrice : null;
+  }
+
+  if (emergencyPnLProtection) {
+    return Math.max(bestBid - rule.slippageLimit, 0.01);
   }
 
   const floor = Math.max(0.01, rule.stopPrice - rule.slippageLimit);
@@ -105,7 +111,7 @@ async function claimRuleExecution(rule: StopLossRule, triggeredPrice: number | n
       marketId: rule.marketId,
       enabled: true,
       orderSubmitted: false,
-      status: { in: [StopLossStatus.ENABLED, StopLossStatus.ARMED] }
+      status: { in: [StopLossStatus.ENABLED, StopLossStatus.ARMED, StopLossStatus.ACTIVE] }
     },
     data: {
       status: StopLossStatus.TRIGGERING,
@@ -130,7 +136,7 @@ async function getEnabledStopRules(marketId: string, tokenId?: string) {
       marketId,
       expiresAt: now + 250,
       rules: await prisma.stopLossRule.findMany({
-        where: { marketId, enabled: true, status: { in: [StopLossStatus.ENABLED, StopLossStatus.ARMED] } }
+        where: { marketId, enabled: true, status: { in: [StopLossStatus.ENABLED, StopLossStatus.ARMED, StopLossStatus.ACTIVE] } }
       })
     };
   }
@@ -187,13 +193,22 @@ export async function createStopLossRule(data: {
   usePriceSlopeConfirmation?: boolean;
   priceSlopeThreshold?: number;
   maxSpread?: number;
+  disableMaxSpread?: boolean;
+  aggressivePnLProtection?: boolean;
+  aggressiveBreakout?: boolean;
+  strategySequenceId?: string;
+  parentRuleId?: string;
+  activationCondition?: string;
+  enabled?: boolean;
+  status?: StopLossStatus;
 }) {
   assertConfiguredToken(data.tokenId);
   const { marketId, conditionId } = marketScope();
   const rule = await prisma.stopLossRule.create({
     data: {
       ...data,
-      status: isBreakoutRule(data.ruleType ?? RuleType.STOP_LOSS) ? StopLossStatus.ARMED : StopLossStatus.ENABLED,
+      enabled: data.enabled ?? true,
+      status: data.status ?? (isBreakoutRule(data.ruleType ?? RuleType.STOP_LOSS) ? StopLossStatus.ARMED : StopLossStatus.ENABLED),
       marketId,
       conditionId,
       outcomeName: data.outcomeName || outcomeForToken(data.tokenId)
@@ -203,9 +218,9 @@ export async function createStopLossRule(data: {
   return rule;
 }
 
-function marketableBuyPrice(rule: { stopPrice: number; slippageLimit: number }, book: OrderBook): number | null {
+export function marketableBuyPrice(rule: { stopPrice: number; slippageLimit: number }, book: OrderBook): number | null {
   if (book.bestAsk === null) return null;
-  return Math.min(0.99, Math.max(rule.stopPrice, book.bestAsk + rule.slippageLimit));
+  return Math.min(0.99, book.bestAsk + rule.slippageLimit);
 }
 
 async function updateLiveRuleState(rule: Awaited<ReturnType<typeof prisma.stopLossRule.findUnique>>, book: OrderBook, ref: number | null) {
@@ -254,7 +269,7 @@ async function currentTradeMode() {
 
 async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode = TradeMode.PAPER, bookOverride?: OrderBook) {
   const { marketId } = marketScope();
-  if (!rule || rule.marketId !== marketId || !rule.enabled || rule.orderSubmitted || rule.status === StopLossStatus.TRIGGERED || rule.status === StopLossStatus.TRIGGERING || rule.status === StopLossStatus.SUBMITTED || rule.status === StopLossStatus.FILLED) {
+  if (!rule || rule.marketId !== marketId || !rule.enabled || rule.orderSubmitted || rule.status === StopLossStatus.TRIGGERED || rule.status === StopLossStatus.TRIGGERING || rule.status === StopLossStatus.SUBMITTED || rule.status === StopLossStatus.ORDER_SUBMITTED || rule.status === StopLossStatus.FILLED || rule.status === StopLossStatus.CANCELLED || rule.status === StopLossStatus.INACTIVE_WAITING_FOR_PARENT) {
     return null;
   }
 
@@ -334,16 +349,25 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
             rawResponse: JSON.stringify(response)
           }
         });
-        return prisma.stopLossRule.update({
-          where: { id: claimedRule.id },
-          data: { status: StopLossStatus.SUBMITTED, orderId: typeof response === "object" && response && "id" in response ? String(response.id) : null }
-        });
+        const orderId = typeof response === "object" && response
+          ? String(
+            "exchangeOrderId" in response
+              ? response.exchangeOrderId
+              : "order" in response && response.order && typeof response.order === "object" && "id" in response.order
+                ? response.order.id
+                : "id" in response
+                  ? response.id
+                  : ""
+          )
+          : "";
+        return markRuleOrderSubmitted(claimedRule.id, orderId || null, response);
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown buy-stop failure";
         await prisma.stopLossTriggerLog.create({
           data: { ruleId: claimedRule.id, referencePrice: executionRef, executablePrice: price, size, tradeMode, success: false, message }
         });
-        return prisma.stopLossRule.update({ where: { id: claimedRule.id }, data: { status: StopLossStatus.FAILED } });
+        await markRuleTerminal(claimedRule.id, StopLossStatus.FAILED, message);
+        return prisma.stopLossRule.findUnique({ where: { id: claimedRule.id } });
       }
     });
   }
@@ -375,12 +399,16 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
   if (softDecision) confirmationTicks.set(confirmationKey(liveRule.id, "SOFT_OFI_STOP"), softDecision.confirmationTicks);
   const softConfirmed = Boolean(softDecision?.priceTriggered && (!liveRule.useOfiConfirmationForSoftStop || softDecision.shouldExit));
   const triggerReason = forceExit ? "TAKE_PROFIT" : hardConfirmed ? "HARD_STOP" : softConfirmed ? "SOFT_OFI_STOP" : null;
+  const spread = book.spread ?? (book.bestAsk !== null && book.bestBid !== null ? book.bestAsk - book.bestBid : null);
+  const spreadOk = liveRule.disableMaxSpread || liveRule.maxSpread === null || liveRule.maxSpread === undefined || (spread !== null && spread <= liveRule.maxSpread);
 
-  if (!triggerReason) {
+  if (!triggerReason || !spreadOk) {
     return {
       triggered: false,
       referencePrice: ref,
       rollingOfi,
+      spread,
+      spreadOk,
       priceTriggered: hardDecision.priceTriggered || Boolean(softDecision?.priceTriggered),
       activeStopPrice: liveRule.stopPrice,
       hardStopPrice,
@@ -397,6 +425,8 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
     const executionRef = referencePrice(executionBook, liveRule.triggerType);
     const claimedRule = await claimRuleExecution(liveRule, executionRef);
     if (!claimedRule) return null;
+    const executionSpread = executionBook.spread ?? (executionBook.bestAsk !== null && executionBook.bestBid !== null ? executionBook.bestAsk - executionBook.bestBid : null);
+    const executionSpreadOk = claimedRule.disableMaxSpread || claimedRule.maxSpread === null || claimedRule.maxSpread === undefined || (executionSpread !== null && executionSpread <= claimedRule.maxSpread);
 
     const position = claimedRule.positionId
     ? await prisma.position.findFirst({ where: { id: claimedRule.positionId, marketId } })
@@ -407,10 +437,13 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
 
     const availableSize = Math.max(0, position?.size ?? claimedRule.positionSize);
     const exitSize = Math.min(availableSize, claimedRule.positionSize, claimedRule.maxSellSize);
-    const price = executionPrice(claimedRule, executionBook);
+    const gameMinute = (await getMarketGameTime(claimedRule.marketId).catch(() => null))?.gameMinute ?? 0;
+    const emergencyPnLProtection = claimedRule.aggressivePnLProtection || gameMinute >= 85;
+    const price = executionPrice(claimedRule, executionBook, emergencyPnLProtection);
 
     try {
       if (exitSize <= 0) throw new Error("No available position size to close");
+      if (!executionSpreadOk) throw new Error(`Spread ${executionSpread?.toFixed(3) ?? "unknown"} exceeds max spread ${claimedRule.maxSpread}`);
 
       let response: unknown;
       if (claimedRule.executionType === StopLossExecutionType.CANCEL_ONLY) {
@@ -444,13 +477,17 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
         }
       });
 
-      return prisma.stopLossRule.update({
+      const updatedRule = await prisma.stopLossRule.update({
         where: { id: claimedRule.id },
         data: {
           enabled: false,
           status: StopLossStatus.TRIGGERED
         }
       });
+      if (claimedRule.strategySequenceId && claimedRule.parentRuleId) {
+        await handleSequenceExitFilled(claimedRule.id);
+      }
+      return updatedRule;
     } catch (error) {
       confirmationTicks.set(claimedRule.id, 0);
       const message = error instanceof Error ? error.message : "Unknown stop-loss failure";
@@ -518,7 +555,10 @@ export async function listStopLossRulesWithLiveState() {
   const rules = await prisma.stopLossRule.findMany({
     where: { marketId },
     orderBy: { updatedAt: "desc" },
-    include: { triggerLogs: { orderBy: { attemptedAt: "desc" }, take: 5 } }
+    include: {
+      triggerLogs: { orderBy: { attemptedAt: "desc" }, take: 5 },
+      childRules: { select: { id: true } }
+    }
   });
 
   return Promise.all(rules.map(async (rule) => {
@@ -539,7 +579,9 @@ export async function listStopLossRulesWithLiveState() {
       activeStopPrice,
       distanceToStop: isBreakoutRule(rule.ruleType) ? null : distanceToStop,
       distanceToTrigger: isBreakoutRule(rule.ruleType) ? distanceToTrigger : null,
-      profitLocked: rule.ruleType === RuleType.TRAILING_STOP ? activeStopPrice > rule.entryPrice : null
+      profitLocked: rule.ruleType === RuleType.TRAILING_STOP ? activeStopPrice > rule.entryPrice : null,
+      displayStatus: ruleStatusForDisplay(rule.status),
+      childRuleIds: rule.childRules.map((child) => child.id)
     };
   }));
 }
@@ -580,7 +622,7 @@ export function startStopLossMonitor() {
     });
   }
   setInterval(() => {
-    evaluateAllStopLossRules().catch((error) => {
+    evaluateAllStopLossRules().then(() => reconcileStrategySequences()).catch((error) => {
       console.error("Stop-loss monitor error", error);
     });
   }, config.RULE_EVALUATION_MS);
