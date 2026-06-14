@@ -91,13 +91,28 @@ export function OrderTicket({ profile, marketId, conditionId, tokenId, outcomeNa
     return Math.max(0, Math.floor(maxSharesCanBuy) * 0.5);
   }, [maxSharesCanBuy]);
 
+  const sellableShares = useMemo(() => {
+    const matchingPositions = account?.positions.filter((position) => (
+      position.tokenId === tokenId
+      && position.side === "BUY"
+      && Number.isFinite(position.size)
+      && position.size > 0
+    )) ?? [];
+    const total = matchingPositions.reduce((sum, position) => sum + position.size, 0);
+    return Number.isFinite(total) && total > 0 ? total : 0;
+  }, [account?.positions, tokenId]);
+
+  const defaultTicketSize = useMemo(() => (
+    side === "sell" ? sellableShares : defaultSize
+  ), [defaultSize, sellableShares, side]);
+
   useEffect(() => {
     setPrice(fmtPrice(currentPrice));
   }, [currentPrice]);
 
   useEffect(() => {
-    setSize(fmtShares(defaultSize));
-  }, [defaultSize]);
+    setSize(fmtShares(defaultTicketSize));
+  }, [defaultTicketSize]);
 
   const notional = Number(price) * Number(size);
   const numericPrice = Number(price);
@@ -121,9 +136,10 @@ export function OrderTicket({ profile, marketId, conditionId, tokenId, outcomeNa
     }
     return "";
   }, [account, notional, price, side, size, tokenId, tradeMode, tradingSettings]);
-  const integerMaxShares = maxSharesCanBuy === null || maxSharesCanBuy === undefined || !Number.isFinite(maxSharesCanBuy)
+  const maxTicketShares = side === "sell" ? sellableShares : maxSharesCanBuy;
+  const integerMaxShares = maxTicketShares === null || maxTicketShares === undefined || !Number.isFinite(maxTicketShares)
     ? null
-    : Math.floor(maxSharesCanBuy);
+    : Math.floor(maxTicketShares);
 
   useEffect(() => {
     if (!notification) return;
@@ -184,6 +200,10 @@ export function OrderTicket({ profile, marketId, conditionId, tokenId, outcomeNa
     if (next !== null) setPrice(fmtPrice(next));
   }
 
+  function setSizeToMax() {
+    setSize(fmtShares(side === "sell" ? sellableShares : defaultSize));
+  }
+
   return (
     <section className="rounded-md border border-line bg-white">
       <div className="h-11 border-b border-line px-3 py-3 text-sm font-semibold">Order Ticket</div>
@@ -212,9 +232,12 @@ export function OrderTicket({ profile, marketId, conditionId, tokenId, outcomeNa
           Size
           <input className="control mt-1 w-full" value={size} onChange={(event) => setSize(event.target.value)} />
         </label>
+        <button className="secondary-button h-8 w-full text-xs" onClick={setSizeToMax} type="button">
+          {side === "sell" ? "Sell All Shares" : "Use Default Size"}
+        </button>
         <div className="grid grid-cols-2 gap-px overflow-hidden rounded-md border border-line bg-line text-xs">
           <div className="bg-white p-2">
-            <div className="text-slate-500">Max shares</div>
+            <div className="text-slate-500">{side === "sell" ? "Sellable shares" : "Max shares"}</div>
             <div className="font-mono font-semibold">{integerMaxShares === null ? "Unavailable" : integerMaxShares.toString()}</div>
           </div>
           <div className="bg-white p-2">
