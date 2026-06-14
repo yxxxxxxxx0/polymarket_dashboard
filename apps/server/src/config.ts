@@ -46,7 +46,7 @@ const envSchema = z.object({
   STOP_OFI_SELL_THRESHOLD: z.coerce.number().default(-0.10),
   ORDERBOOK_REFRESH_MS: z.coerce.number().int().min(100).default(500),
   RULE_EVALUATION_MS: z.coerce.number().int().min(100).default(1_000),
-  ORDERBOOK_STALE_MS: z.coerce.number().int().min(100).default(2_000),
+  ORDERBOOK_STALE_MS: z.coerce.number().int().min(100).default(1_500),
   MARKET_STATS_REFRESH_MS: z.coerce.number().int().min(1_000).default(5_000),
   PORT: z.coerce.number().default(4000),
   WEB_ORIGIN: z.string().default("http://localhost:3000"),
