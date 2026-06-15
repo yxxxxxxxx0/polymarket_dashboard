@@ -270,6 +270,15 @@ export function getCachedOfi(tokenId: string) {
   return getCachedOrderBook(tokenId).ofi ?? emptyBook(tokenId).ofi;
 }
 
+export function orderBookCacheStatus() {
+  return {
+    size: books.size,
+    subscribedTokenCount: subscribedTokenIds.size,
+    socketReadyState: socket?.readyState ?? null,
+    tokens: [...books.keys()]
+  };
+}
+
 export function onOrderBookUpdate(listener: (book: OrderBook) => void) {
   listeners.add(listener);
   return () => listeners.delete(listener);

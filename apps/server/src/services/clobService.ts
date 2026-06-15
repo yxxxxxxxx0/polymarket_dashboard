@@ -10,6 +10,7 @@ import { createWalletClient, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { balanceSignatureType, config, orderSignatureType } from "../config.js";
 import { HttpError } from "../lib/http.js";
+import { fetchWithTimeout, withTimeout } from "../lib/timeout.js";
 import { getCachedOrderBook, hasFreshOrderBook, subscribeTokens, updateCachedOrderBook } from "./orderbookCache.js";
 import { assertConfiguredMarket, assertConfiguredToken } from "./singleMarketService.js";
 import type { OrderBook } from "../types/domain.js";
@@ -61,7 +62,11 @@ async function buildClobClient(signatureType: number): Promise<ClobClient> {
   const account = privateKeyToAccount(config.PRIVATE_KEY as `0x${string}`);
   const signer = createWalletClient({ account, transport: http(config.POLYGON_RPC_URL) });
   const creds = credentialsFromEnv()
-    ?? await new ClobClient({ host: config.POLYMARKET_CLOB_HOST, chain: 137, signer }).createOrDeriveApiKey();
+    ?? await withTimeout(
+      new ClobClient({ host: config.POLYMARKET_CLOB_HOST, chain: 137, signer }).createOrDeriveApiKey(),
+      config.POLYMARKET_FETCH_TIMEOUT_MS,
+      "Polymarket API key derivation"
+    );
 
   return new ClobClient({
     host: config.POLYMARKET_CLOB_HOST,
@@ -109,10 +114,10 @@ export async function fetchOrderBook(tokenId: string, options: { force?: boolean
     return getCachedOrderBook(tokenId);
   }
   try {
-    const response = await fetch(`${config.POLYMARKET_CLOB_HOST}/book?token_id=${encodeURIComponent(tokenId)}`, {
+    const response = await fetchWithTimeout(`${config.POLYMARKET_CLOB_HOST}/book?token_id=${encodeURIComponent(tokenId)}`, {
       headers: { accept: "application/json" },
       cache: "no-store"
-    });
+    }, config.POLYMARKET_ORDERBOOK_TIMEOUT_MS);
     if (!response.ok) throw new Error(`Order book request failed with status ${response.status}`);
     const raw = await response.json() as { bids?: { price: string; size: string }[]; asks?: { price: string; size: string }[]; market?: string; asset_id?: string; timestamp?: string; hash?: string };
     const book = getCachedOrderBook(tokenId);
@@ -173,43 +178,56 @@ export async function createLiveOrder(input: {
     ...(input.negRisk === undefined ? {} : { negRisk: input.negRisk })
   };
   const response = orderSignatureType === 3
-    ? await client.postOrder(await withSecondPrecisionTimestamp(() => client.createOrder(userOrder, orderOptions)), OrderType.GTC) as LiveOrderResponse
-    : await client.createAndPostOrder(userOrder, orderOptions, OrderType.GTC) as LiveOrderResponse;
+    ? await withTimeout(
+      client.postOrder(await withSecondPrecisionTimestamp(() => client.createOrder(userOrder, orderOptions)), OrderType.GTC) as Promise<LiveOrderResponse>,
+      config.POLYMARKET_ORDER_SUBMIT_TIMEOUT_MS,
+      "Polymarket order submit"
+    )
+    : await withTimeout(
+      client.createAndPostOrder(userOrder, orderOptions, OrderType.GTC) as Promise<LiveOrderResponse>,
+      config.POLYMARKET_ORDER_SUBMIT_TIMEOUT_MS,
+      "Polymarket order submit"
+    );
 
   return assertLiveOrderAccepted(response);
 }
 
 export async function cancelLiveOrder(orderId: string) {
   const client = await getTradingClobClient();
-  return client.cancelOrder({ orderID: orderId });
+  return withTimeout(client.cancelOrder({ orderID: orderId }), config.POLYMARKET_ORDER_SUBMIT_TIMEOUT_MS, "Polymarket order cancel");
 }
 
 export async function cancelLiveMarketOrders(marketId: string) {
   assertConfiguredMarket(marketId);
   const client = await getTradingClobClient();
   if (typeof (client as unknown as { cancelMarketOrders?: unknown }).cancelMarketOrders === "function") {
-    return (client as unknown as { cancelMarketOrders: (market: string) => Promise<unknown> }).cancelMarketOrders(marketId);
+    return withTimeout(
+      (client as unknown as { cancelMarketOrders: (market: string) => Promise<unknown> }).cancelMarketOrders(marketId),
+      config.POLYMARKET_ORDER_SUBMIT_TIMEOUT_MS,
+      "Polymarket market order cancel"
+    );
   }
-  const orders = await client.getOpenOrders();
+  const orders = await withTimeout(client.getOpenOrders(), config.POLYMARKET_FETCH_TIMEOUT_MS, "Polymarket open orders");
   const ids = (Array.isArray(orders) ? orders : [])
     .filter((order: { market?: string; marketId?: string }) => order.market === marketId || order.marketId === marketId)
     .map((order: { id?: string; orderID?: string }) => order.id ?? order.orderID)
     .filter((id): id is string => typeof id === "string");
   if (ids.length === 0) return { cancelled: 0 };
-  return (client as unknown as { cancelOrders?: (ids: string[]) => Promise<unknown> }).cancelOrders?.(ids);
+  const cancelOrders = (client as unknown as { cancelOrders?: (ids: string[]) => Promise<unknown> }).cancelOrders;
+  return cancelOrders ? withTimeout(cancelOrders(ids), config.POLYMARKET_ORDER_SUBMIT_TIMEOUT_MS, "Polymarket order cancel batch") : undefined;
 }
 
 export async function getLiveOpenOrders() {
   const client = await getTradingClobClient();
-  return client.getOpenOrders();
+  return withTimeout(client.getOpenOrders(), config.POLYMARKET_FETCH_TIMEOUT_MS, "Polymarket open orders");
 }
 
 export async function getLiveOrder(orderId: string) {
   const client = await getTradingClobClient();
-  return client.getOrder(orderId);
+  return withTimeout(client.getOrder(orderId), config.POLYMARKET_FETCH_TIMEOUT_MS, "Polymarket order lookup");
 }
 
 export async function getLiveTrades(params?: { id?: string; maker_address?: string; market?: string; asset_id?: string; before?: string; after?: string }) {
   const client = await getTradingClobClient();
-  return client.getTrades(params);
+  return withTimeout(client.getTrades(params), config.POLYMARKET_FETCH_TIMEOUT_MS, "Polymarket trades");
 }

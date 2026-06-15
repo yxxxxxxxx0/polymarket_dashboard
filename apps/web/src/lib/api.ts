@@ -7,7 +7,7 @@ function positiveEnvNumber(value: string | undefined, fallback: number) {
 
 const API_TIMEOUT_MS = positiveEnvNumber(process.env.NEXT_PUBLIC_API_TIMEOUT_MS, 10_000);
 export const UI_REFRESH_MS = positiveEnvNumber(process.env.NEXT_PUBLIC_UI_REFRESH_MS, 10_000);
-export const ORDERBOOK_POLL_MS = positiveEnvNumber(process.env.NEXT_PUBLIC_ORDERBOOK_POLL_MS, 1_000);
+export const ORDERBOOK_POLL_MS = positiveEnvNumber(process.env.NEXT_PUBLIC_ORDERBOOK_POLL_MS, 1_500);
 export const DEFAULT_MARKET_PROFILE = "football";
 
 export function profileFromPath(pathname: string | null | undefined) {
@@ -165,6 +165,10 @@ export type AccountPositionSummary = {
 };
 
 export type AccountSummaryResponse = {
+  ok?: boolean;
+  stale?: boolean;
+  cachedAt?: string;
+  warning?: string;
   marketId: string;
   balance: {
     available: boolean;

@@ -1,4 +1,5 @@
 import { config } from "../config.js";
+import { fetchWithTimeout } from "../lib/timeout.js";
 
 const cache = new Map<string, { expiresAt: number; value: { volume: number; liquidity: number; raw: unknown } | null }>();
 
@@ -16,10 +17,10 @@ function metadataFromRaw(raw: Record<string, unknown>) {
 }
 
 async function fetchGamma(pathname: string) {
-  const response = await fetch(`https://gamma-api.polymarket.com${pathname}`, {
+  const response = await fetchWithTimeout(`https://gamma-api.polymarket.com${pathname}`, {
     headers: { accept: "application/json" },
     cache: "no-store"
-  });
+  }, config.POLYMARKET_FETCH_TIMEOUT_MS);
   if (!response.ok) throw new Error(`Market metadata request failed with status ${response.status}`);
   return await response.json() as Record<string, unknown>;
 }

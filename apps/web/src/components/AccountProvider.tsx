@@ -20,6 +20,7 @@ export function AccountProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const inFlight = useRef<Promise<AccountSummaryResponse | null> | null>(null);
+  const retryTimer = useRef<number | null>(null);
   const mounted = useRef(true);
 
   const refreshAccount = useCallback((options: { force?: boolean } = {}) => {
@@ -29,13 +30,18 @@ export function AccountProvider({ children }: { children: ReactNode }) {
       .then((nextAccount) => {
         if (mounted.current) {
           setAccount(nextAccount);
-          setError(null);
+          setError(nextAccount.stale ? nextAccount.warning ?? "Account temporarily unavailable; showing cached data." : null);
         }
         return nextAccount;
       })
       .catch((nextError) => {
         if (mounted.current) {
-          setError(nextError instanceof Error ? nextError.message : "Account unavailable");
+          setError(nextError instanceof Error ? nextError.message : "Account temporarily unavailable");
+          if (retryTimer.current !== null) window.clearTimeout(retryTimer.current);
+          retryTimer.current = window.setTimeout(() => {
+            retryTimer.current = null;
+            void refreshAccount();
+          }, 2_500);
         }
         return null;
       })
@@ -56,6 +62,7 @@ export function AccountProvider({ children }: { children: ReactNode }) {
     return () => {
       mounted.current = false;
       window.clearInterval(poll);
+      if (retryTimer.current !== null) window.clearTimeout(retryTimer.current);
     };
   }, [refreshAccount]);
 

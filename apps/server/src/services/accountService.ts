@@ -2,6 +2,8 @@ import { AssetType, COLLATERAL_TOKEN_DECIMALS } from "@polymarket/clob-client-v2
 import { OrderSide } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { config } from "../config.js";
+import { HttpError } from "../lib/http.js";
+import { fetchWithTimeout, withTimeout } from "../lib/timeout.js";
 import { fetchOrderBook, getBalanceClobClient } from "./clobService.js";
 import { currentMarketProfile } from "./activeMarketService.js";
 import { configuredMarket, marketScope, outcomeForToken } from "./singleMarketService.js";
@@ -15,9 +17,11 @@ type BalanceAllowancePayload = {
   allowance?: string | number | null;
 };
 
-const ACCOUNT_SUMMARY_CACHE_MS = 2_000;
+const ACCOUNT_SUMMARY_SUCCESS_CACHE_MS = 3_000;
+const ACCOUNT_SUMMARY_FAILURE_CACHE_MS = 1_000;
 
 const cachedAccountSummaries = new Map<string, { expiresAt: number; value: Awaited<ReturnType<typeof buildAccountSummary>> }>();
+const accountSummaryFailures = new Map<string, { expiresAt: number; error: string; failedAt: string }>();
 const accountSummaryInFlight = new Map<string, Promise<Awaited<ReturnType<typeof buildAccountSummary>>>>();
 
 function parseTokenAmount(value: string | number | null | undefined, decimals = COLLATERAL_TOKEN_DECIMALS) {
@@ -47,7 +51,11 @@ function markPrice(side: OrderSide, entryPrice: number, currentPrice: number | n
 async function liveBalance() {
   try {
     const client = await getBalanceClobClient();
-    const response = await client.getBalanceAllowance({ asset_type: AssetType.COLLATERAL }) as BalanceAllowancePayload;
+    const response = await withTimeout(
+      client.getBalanceAllowance({ asset_type: AssetType.COLLATERAL }) as Promise<BalanceAllowancePayload>,
+      config.POLYMARKET_FETCH_TIMEOUT_MS,
+      "Polymarket balance"
+    );
     const balance = firstParsedAmount([response.balance, response.available, response.collateral, response.cash]);
     const allowances = Object.fromEntries(
       Object.entries(response.allowances ?? {}).map(([key, value]) => [key, parseTokenAmount(value)])
@@ -97,10 +105,10 @@ async function livePositions(marketId: string) {
       sizeThreshold: "0",
       limit: "100"
     });
-    const response = await fetch(`${config.POLYMARKET_DATA_HOST}/positions?${params.toString()}`, {
+    const response = await fetchWithTimeout(`${config.POLYMARKET_DATA_HOST}/positions?${params.toString()}`, {
       headers: { accept: "application/json" },
       cache: "no-store"
-    });
+    }, config.POLYMARKET_FETCH_TIMEOUT_MS);
     if (!response.ok) throw new Error(`Positions request failed with status ${response.status}`);
     const payload = await response.json();
     return Array.isArray(payload) ? payload as LivePosition[] : [];
@@ -113,13 +121,30 @@ export async function accountSummary(options: { force?: boolean } = {}) {
   const now = Date.now();
   const profile = currentMarketProfile();
   const cachedAccountSummary = cachedAccountSummaries.get(profile);
+  const cachedFailure = accountSummaryFailures.get(profile);
   if (!options.force && cachedAccountSummary && cachedAccountSummary.expiresAt > now) return cachedAccountSummary.value;
+  if (!options.force && cachedFailure && cachedFailure.expiresAt > now) {
+    if (cachedAccountSummary) return { ...cachedAccountSummary.value, ok: true, stale: true, cachedAt: cachedAccountSummary.value.updatedAt, warning: cachedFailure.error };
+    throw new HttpError(503, cachedFailure.error);
+  }
   const inFlight = accountSummaryInFlight.get(profile);
   if (!options.force && inFlight) return inFlight;
 
-  const nextInFlight = buildAccountSummary()
+  const nextInFlight = withTimeout(buildAccountSummary(), config.POLYMARKET_FETCH_TIMEOUT_MS, "Polymarket account summary")
     .then((summary) => {
-      cachedAccountSummaries.set(profile, { value: summary, expiresAt: Date.now() + ACCOUNT_SUMMARY_CACHE_MS });
+      const value = { ...summary, ok: true, stale: false, cachedAt: summary.updatedAt };
+      cachedAccountSummaries.set(profile, { value, expiresAt: Date.now() + ACCOUNT_SUMMARY_SUCCESS_CACHE_MS });
+      accountSummaryFailures.delete(profile);
+      return value;
+    })
+    .catch((error) => {
+      const message = error instanceof Error ? error.message : "Account unavailable";
+      accountSummaryFailures.set(profile, { error: message, failedAt: new Date().toISOString(), expiresAt: Date.now() + ACCOUNT_SUMMARY_FAILURE_CACHE_MS });
+      const fallback = cachedAccountSummaries.get(profile);
+      if (fallback) return { ...fallback.value, ok: true, stale: true, cachedAt: fallback.value.updatedAt, warning: message };
+      throw new HttpError(error instanceof HttpError ? error.status : 503, message);
+    })
+    .then((summary) => {
       return summary;
     })
     .finally(() => {
@@ -132,6 +157,23 @@ export async function accountSummary(options: { force?: boolean } = {}) {
 
 export function invalidateAccountSummaryCache() {
   cachedAccountSummaries.delete(currentMarketProfile());
+  accountSummaryFailures.delete(currentMarketProfile());
+}
+
+export function accountCacheStatus() {
+  const profile = currentMarketProfile();
+  const cached = cachedAccountSummaries.get(profile);
+  const failure = accountSummaryFailures.get(profile);
+  return {
+    profile,
+    cached: Boolean(cached),
+    cachedExpiresInMs: cached ? Math.max(0, cached.expiresAt - Date.now()) : null,
+    cachedAt: cached?.value.updatedAt ?? null,
+    failureCached: Boolean(failure && failure.expiresAt > Date.now()),
+    lastFailure: failure?.error ?? null,
+    failureExpiresInMs: failure ? Math.max(0, failure.expiresAt - Date.now()) : null,
+    inFlight: accountSummaryInFlight.has(profile)
+  };
 }
 
 async function buildAccountSummary() {

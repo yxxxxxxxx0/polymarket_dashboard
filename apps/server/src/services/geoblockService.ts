@@ -1,5 +1,6 @@
 import type { GeoblockResult } from "../types/domain.js";
 import { config } from "../config.js";
+import { fetchWithTimeout } from "../lib/timeout.js";
 
 const closeOnlyCountries = new Set(["PL", "SG", "TH", "TW"]);
 
@@ -17,10 +18,10 @@ export async function checkGeoblock(): Promise<GeoblockResult> {
     };
   }
 
-  const response = await fetch("https://polymarket.com/api/geoblock", {
+  const response = await fetchWithTimeout("https://polymarket.com/api/geoblock", {
     headers: { accept: "application/json" },
     cache: "no-store"
-  });
+  }, config.POLYMARKET_FETCH_TIMEOUT_MS);
 
   if (!response.ok) {
     throw new Error(`Geoblock check failed with status ${response.status}`);

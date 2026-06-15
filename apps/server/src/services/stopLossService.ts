@@ -43,6 +43,12 @@ const emergencyCooldowns = new Map<string, number>();
 const tokenEvaluationQueues = new Map<string, { running: boolean; pending: OrderBook | null }>();
 const tokenExecutionLocks = new Set<string>();
 const blockedLogCooldowns = new Map<string, number>();
+let stopLossEvaluating = false;
+let breakoutEvaluating = false;
+let lastStopLossTickAt: string | null = null;
+let lastStopLossTickDurationMs: number | null = null;
+let lastBreakoutTickAt: string | null = null;
+let lastBreakoutTickDurationMs: number | null = null;
 let enabledRulesCache: { marketId: string; expiresAt: number; rules: StopLossRule[] } | null = null;
 let subscribedToOrderBookUpdates = false;
 let cachedTradeMode: { value: TradeMode; expiresAt: number } | null = null;
@@ -1168,7 +1174,12 @@ export async function evaluateAllStopLossRules() {
 
   const results = [];
   for (const rule of enabledRules) {
-    results.push(await evaluateStopLossRuleRow(rule, tradeMode, undefined, "normal"));
+    try {
+      results.push(await evaluateStopLossRuleRow(rule, tradeMode, undefined, "normal"));
+    } catch (error) {
+      console.error("[stop-loss] rule evaluation failed", { ruleId: rule.id, tokenId: rule.tokenId, error });
+      results.push(null);
+    }
   }
   return results;
 }
@@ -1179,9 +1190,27 @@ export async function evaluateStopRulesForMarket(marketId: string, book?: OrderB
 
   const results = [];
   for (const rule of enabledRules) {
-    results.push(await evaluateStopLossRuleRow(rule, tradeMode, book, book ? "fast" : "normal"));
+    try {
+      results.push(await evaluateStopLossRuleRow(rule, tradeMode, book, book ? "fast" : "normal"));
+    } catch (error) {
+      console.error("[stop-loss] event rule evaluation failed", { ruleId: rule.id, tokenId: rule.tokenId, error });
+      results.push(null);
+    }
   }
   return results;
+}
+
+export function evaluatorDiagnostics() {
+  return {
+    stopLossEvaluating,
+    breakoutEvaluating,
+    lastStopLossTickAt,
+    lastStopLossTickDurationMs,
+    lastBreakoutTickAt,
+    lastBreakoutTickDurationMs,
+    activeTokenEvaluationQueues: [...tokenEvaluationQueues.entries()].filter(([, state]) => state.running).map(([tokenId]) => tokenId),
+    pendingTokenEvaluationQueues: [...tokenEvaluationQueues.entries()].filter(([, state]) => state.pending).map(([tokenId]) => tokenId)
+  };
 }
 
 export async function stopLossStatus() {
@@ -1192,7 +1221,7 @@ export async function stopLossStatus() {
     prisma.stopLossRule.count({ where: { marketId, status: StopLossStatus.FAILED } }),
     prisma.stopLossRule.count({ where: { marketId } })
   ]);
-  return { marketId, total, enabled, triggered, failed, running: true };
+  return { marketId, total, enabled, triggered, failed, running: true, evaluator: evaluatorDiagnostics() };
 }
 
 export async function listStopLossRulesWithLiveState() {
@@ -1385,8 +1414,27 @@ export function startStopLossMonitor() {
     });
   }
   setInterval(() => {
-    evaluateAllStopLossRules().then(() => retryTimedOutEmergencyOrders()).then(() => reconcileStrategySequences()).catch((error) => {
-      console.error("Stop-loss monitor error", error);
-    });
-  }, config.RULE_EVALUATION_MS);
+    if (stopLossEvaluating || breakoutEvaluating) {
+      console.warn("[stop-loss] previous evaluation still running, skipping tick");
+      return;
+    }
+    const started = Date.now();
+    stopLossEvaluating = true;
+    breakoutEvaluating = true;
+    lastStopLossTickAt = new Date(started).toISOString();
+    lastBreakoutTickAt = lastStopLossTickAt;
+    evaluateAllStopLossRules()
+      .then(() => retryTimedOutEmergencyOrders())
+      .then(() => reconcileStrategySequences())
+      .catch((error) => {
+        console.error("[stop-loss] evaluation failed", error);
+      })
+      .finally(() => {
+        const duration = Date.now() - started;
+        lastStopLossTickDurationMs = duration;
+        lastBreakoutTickDurationMs = duration;
+        stopLossEvaluating = false;
+        breakoutEvaluating = false;
+      });
+  }, config.STOP_LOSS_POLL_MS);
 }
