@@ -1,17 +1,13 @@
 "use client";
 
-import { createContext, useContext, useMemo, type ReactNode } from "react";
-import type { OrderBook } from "@/lib/api";
-import { useDashboardWs } from "@/hooks/useDashboardWs";
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { api, ORDERBOOK_POLL_MS, streamUrl, withProfile, type OrderBook } from "@/lib/api";
 
 type OrderBookContextValue = {
   books: Record<string, OrderBook | undefined>;
-  connected: boolean;
-  lastUpdateAt: number | null;
-  error: string | null;
 };
 
-const OrderBookContext = createContext<OrderBookContextValue>({ books: {}, connected: false, lastUpdateAt: null, error: null });
+const OrderBookContext = createContext<OrderBookContextValue>({ books: {} });
 
 function uniqueTokens(tokenIds: string[]) {
   return [...new Set(tokenIds.filter(Boolean))];
@@ -19,8 +15,40 @@ function uniqueTokens(tokenIds: string[]) {
 
 export function OrderBookProvider({ tokenIds, profile, children }: { tokenIds: string[]; profile?: string; children: ReactNode }) {
   const tokens = useMemo(() => uniqueTokens(tokenIds), [tokenIds.join("|")]);
-  const { books, connected, lastUpdateAt, error } = useDashboardWs({ tokenIds: tokens, profile });
-  const value = useMemo(() => ({ books, connected, lastUpdateAt, error }), [books, connected, lastUpdateAt, error]);
+  const [books, setBooks] = useState<Record<string, OrderBook | undefined>>({});
+
+  useEffect(() => {
+    if (tokens.length === 0) {
+      setBooks({});
+      return;
+    }
+
+    setBooks({});
+    const updateBook = (book: OrderBook) => {
+      setBooks((current) => ({ ...current, [book.tokenId]: book }));
+    };
+
+    const loadBooks = () => {
+      tokens.forEach((tokenId) => {
+        api<OrderBook>(withProfile(`/api/orderbook/${tokenId}`, profile)).then(updateBook).catch(() => undefined);
+      });
+    };
+
+    loadBooks();
+    const poll = window.setInterval(loadBooks, ORDERBOOK_POLL_MS);
+    const sources = tokens.map((tokenId) => {
+      const source = new EventSource(streamUrl(`/api/stream/orderbook?tokenId=${encodeURIComponent(tokenId)}`, profile));
+      source.onmessage = (event) => updateBook(JSON.parse(event.data) as OrderBook);
+      return source;
+    });
+
+    return () => {
+      window.clearInterval(poll);
+      sources.forEach((source) => source.close());
+    };
+  }, [profile, tokens.join("|")]);
+
+  const value = useMemo(() => ({ books }), [books]);
   return <OrderBookContext.Provider value={value}>{children}</OrderBookContext.Provider>;
 }
 
@@ -34,9 +62,4 @@ export function useOrderBooks(tokenIds: string[]) {
     () => Object.fromEntries(tokenIds.filter(Boolean).map((tokenId) => [tokenId, books[tokenId] ?? null])) as Record<string, OrderBook | null>,
     [books, tokenIds.join("|")]
   );
-}
-
-export function useOrderBookConnection() {
-  const { connected, lastUpdateAt, error } = useContext(OrderBookContext);
-  return { connected, lastUpdateAt, error };
 }

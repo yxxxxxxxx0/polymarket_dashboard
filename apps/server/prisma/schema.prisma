@@ -60,7 +60,7 @@ model StrategySequence {
   tokenId     String
   outcomeName String
   status      StopLossStatus @default(PENDING)
-  activationCondition String @default("PARTIAL_FILL_ALLOWED")
+  activationCondition String @default("PARENT_FULL_FILL")
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -152,8 +152,6 @@ model StopLossRule {
   breakevenEnabled Boolean @default(false)
   breakevenTriggerPrice Float?
   breakevenBuffer Float @default(0)
-  breakevenActivatedAt DateTime?
-  breakevenActivatedPrice Float?
   takeProfitPrice Float?
   triggeredPrice Float?
   orderSubmitted Boolean @default(false)

@@ -13,14 +13,6 @@ let reconnectTimer: NodeJS.Timeout | null = null;
 const subscribedTokenIds = new Set<string>();
 const listeners = new Set<(book: OrderBook) => void>();
 
-function sendMarketSubscription(reason: string) {
-  if (!socket || socket.readyState !== WebSocket.OPEN) return;
-  const assets_ids = [...subscribedTokenIds];
-  if (assets_ids.length === 0) return;
-  socket.send(JSON.stringify({ type: "market", assets_ids }));
-  console.log("[orderbook-ws] subscribed", { reason, tokenCount: assets_ids.length });
-}
-
 function ofiConfig(windowSeconds: number): RollingOfiConfig {
   return {
     windowSeconds,
@@ -232,7 +224,8 @@ export function ensureMarketSocket() {
 
   socket = new WebSocket(marketWsUrl());
   socket.on("open", () => {
-    sendMarketSubscription("open");
+    const assets_ids = [...subscribedTokenIds];
+    if (assets_ids.length > 0) socket?.send(JSON.stringify({ type: "market", assets_ids }));
     heartbeat = setInterval(() => socket?.readyState === WebSocket.OPEN && socket.send("{}"), 10_000);
   });
   socket.on("message", handleMessage);
@@ -250,7 +243,9 @@ export function ensureMarketSocket() {
 export function subscribeTokens(tokenIds: string[]) {
   for (const tokenId of tokenIds) subscribedTokenIds.add(assertConfiguredToken(tokenId));
   ensureMarketSocket();
-  sendMarketSubscription("tokens-updated");
+  if (socket?.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ operation: "subscribe", assets_ids: tokenIds }));
+  }
 }
 
 export function getCachedOrderBook(tokenId: string): OrderBook {

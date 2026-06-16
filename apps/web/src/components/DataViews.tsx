@@ -309,10 +309,10 @@ export function StopLossView({ profile, refreshKey = 0, title = "Stop / Trail / 
         </div>
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[2380px] border-collapse">
+        <table className="w-full min-w-[2300px] border-collapse">
           <thead className="table-head">
             <tr>
-              {["Type", "Outcome", "Relationship", "Trigger", "Trigger Px", "Threshold", "Bid", "Ask", "Spread", "Age", "Stale", "Current", "Hard", "Soft", "Active", "Distance", "Trail %", "Slip", "Max Spread", "Emergency", "Breakeven", "Last Limit", "Last Attempt", "Blocked", "Retries", "Game Min", "Status", "Enabled", "Actions"].map((name) => (
+              {["Type", "Outcome", "Relationship", "Trigger", "Trigger Px", "Threshold", "Bid", "Ask", "Spread", "Age", "Stale", "Current", "Hard", "Soft", "Active", "Distance", "Trail %", "Slip", "Max Spread", "Emergency", "Last Limit", "Last Attempt", "Blocked", "Retries", "Game Min", "Status", "Enabled", "Actions"].map((name) => (
                 <th key={name} className="px-3 py-2">{name}</th>
               ))}
             </tr>
@@ -320,14 +320,14 @@ export function StopLossView({ profile, refreshKey = 0, title = "Stop / Trail / 
           <tbody>
             {rows.length === 0 && (
               <tr>
-                <td className="table-cell text-slate-500" colSpan={29}>No stop, trailing, or breakout rules yet.</td>
+                <td className="table-cell text-slate-500" colSpan={28}>No stop, trailing, or breakout rules yet.</td>
               </tr>
             )}
             {sortedRows.map((row, index) => (
               <Fragment key={String(row.id)}>
                 {index === dividerIndex && (
                   <tr key="finished-inactive-divider">
-                    <td className="border-y-2 border-ink bg-slate-100 px-3 py-2 text-xs font-bold uppercase tracking-wide text-slate-700" colSpan={29}>
+                    <td className="border-y-2 border-ink bg-slate-100 px-3 py-2 text-xs font-bold uppercase tracking-wide text-slate-700" colSpan={28}>
                       Finished / inactive orders
                     </td>
                   </tr>
@@ -353,7 +353,6 @@ export function StopLossView({ profile, refreshKey = 0, title = "Stop / Trail / 
                   <td className="table-cell" title={cell(row.effectiveRiskLabel)}>{cell(row.effectiveSlippageLimit ?? row.slippageLimit)}</td>
                   <td className="table-cell" title={cell(row.effectiveRiskLabel)}>{row.effectiveDisableMaxSpread ? "Disabled" : cell(row.effectiveMaxSpread ?? row.maxSpread)}</td>
                   <td className="table-cell">{row.emergencyMode ? "On" : "Off"}</td>
-                  <td className="table-cell">{row.breakevenActivated ? "Activated" : row.breakevenEnabled ? "Armed" : "-"}</td>
                   <td className="table-cell">{cell(row.lastLimitPrice)}</td>
                   <td className="table-cell">{cell(row.lastExecutionAttempt)}</td>
                   <td className="table-cell max-w-72 truncate text-xs" title={cell(row.lastBlockedReason ?? latestRuleMessage(row))}>{cell(row.lastBlockedReason ?? latestRuleMessage(row))}</td>

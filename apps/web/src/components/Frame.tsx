@@ -2,10 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { AlertTriangle, BarChart3, Briefcase, ClipboardList, LayoutDashboard, ShieldAlert, Trophy } from "lucide-react";
+import { BarChart3, Briefcase, ClipboardList, LayoutDashboard, ShieldAlert, Trophy } from "lucide-react";
 import { AccountSummary } from "./AccountSummary";
-import { post } from "@/lib/api";
-import { useState } from "react";
 
 const nav = [
   { href: "/", label: "Football", icon: LayoutDashboard },
@@ -17,22 +15,6 @@ const nav = [
 
 export function Frame({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const [panicClosing, setPanicClosing] = useState(false);
-
-  async function panicClose() {
-    if (panicClosing) return;
-    const confirmed = window.confirm("PANIC CLOSE: cancel all open orders and sell all current positions with marketable limits?");
-    if (!confirmed) return;
-    setPanicClosing(true);
-    try {
-      await post("/api/kill-switch", { closePositionsConfirmed: true });
-      window.alert("Panic close submitted. Check Positions and Orders for confirmation.");
-    } catch (error) {
-      window.alert(error instanceof Error ? error.message : "Panic close failed");
-    } finally {
-      setPanicClosing(false);
-    }
-  }
   return (
     <div className="min-h-screen">
       <aside className="fixed inset-y-0 left-0 hidden w-60 border-r border-line bg-white md:block">
@@ -61,18 +43,7 @@ export function Frame({ children }: { children: React.ReactNode }) {
       </aside>
       <div className="md:pl-60">
         <header className="sticky top-0 z-20 flex h-14 items-center justify-between border-b border-line bg-white px-4">
-          <div className="flex items-center gap-3">
-            <div className="text-sm font-semibold">Trading Dashboard</div>
-            <button
-              className="inline-flex h-8 items-center gap-2 rounded-md border border-rose-300 bg-rose-50 px-3 text-xs font-bold text-rose-700 hover:bg-rose-100 disabled:opacity-60"
-              onClick={panicClose}
-              disabled={panicClosing}
-              type="button"
-            >
-              <AlertTriangle className="h-4 w-4" />
-              {panicClosing ? "Closing..." : "Panic Close"}
-            </button>
-          </div>
+          <div className="text-sm font-semibold">Trading Dashboard</div>
           <AccountSummary />
         </header>
         <main className="p-4">{children}</main>

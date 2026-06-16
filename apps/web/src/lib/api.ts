@@ -1,6 +1,5 @@
 export const API_BASE = "";
 export const STREAM_BASE = process.env.NEXT_PUBLIC_STREAM_BASE ?? "http://localhost:4000";
-export const WS_BASE = process.env.NEXT_PUBLIC_WS_BASE ?? "ws://localhost:4000";
 function positiveEnvNumber(value: string | undefined, fallback: number) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -28,10 +27,6 @@ export function streamUrl(path: string, profile?: string) {
   const url = new URL(path, STREAM_BASE);
   if (profile && profile !== DEFAULT_MARKET_PROFILE) url.searchParams.set("profile", profile);
   return url.toString();
-}
-
-export function dashboardWsUrl(path = "/ws/dashboard") {
-  return new URL(path, WS_BASE).toString();
 }
 
 export type MarketSummary = {

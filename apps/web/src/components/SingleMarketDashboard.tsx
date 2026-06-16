@@ -2,8 +2,7 @@
 
 import { ArrowRight, CheckCircle2, ChevronsUpDown, Plus, RefreshCw, ShieldPlus, Trash2, TrendingUp, Zap } from "lucide-react";
 import { useEffect, useState } from "react";
-import { api, post, withProfile, type ActiveMarketConfig, type MarketSummary, type SavedMarketConfig } from "@/lib/api";
-import { useDashboardWs } from "@/hooks/useDashboardWs";
+import { api, post, streamUrl, withProfile, type ActiveMarketConfig, type MarketStats, type MarketSummary, type SavedMarketConfig } from "@/lib/api";
 import { MarketPriceChart } from "./MarketPriceChart";
 import { OrderBookPanel } from "./OrderBookPanel";
 import { OrderBookProvider } from "./OrderBookProvider";
@@ -15,7 +14,6 @@ import { BuyingPowerSummary } from "./BuyingPowerSummary";
 import { StopLossView } from "./DataViews";
 import { useAccount } from "./AccountProvider";
 import { GameTimePanel } from "./GameTimePanel";
-import { LatencyTestPanel } from "./LatencyTestPanel";
 
 export function SingleMarketDashboard({ profile = "football", marketLabel = "Market" }: { profile?: string; marketLabel?: string }) {
   const { account, refreshAccount } = useAccount();
@@ -52,14 +50,18 @@ export function SingleMarketDashboard({ profile = "football", marketLabel = "Mar
     void loadMarket();
   }, [profile]);
 
-  const { marketStats } = useDashboardWs({ profile, marketStats: Boolean(market) });
-
   useEffect(() => {
-    if (!marketStats || !market || marketStats.marketId !== market.id) return;
-    setMarket((current) => current && current.id === marketStats.marketId
-      ? { ...current, volume: marketStats.volume, liquidity: marketStats.liquidity }
-      : current);
-  }, [marketStats, market?.id]);
+    if (!market) return;
+    const source = new EventSource(streamUrl("/api/stream/market-stats", profile));
+    source.onmessage = (event) => {
+      const stats = JSON.parse(event.data) as MarketStats;
+      if (stats.marketId !== market.id) return;
+      setMarket((current) => current && current.id === stats.marketId
+        ? { ...current, volume: stats.volume, liquidity: stats.liquidity }
+        : current);
+    };
+    return () => source.close();
+  }, [market?.id, profile]);
 
   async function loadSavedMarkets() {
     setSavedMarketsLoading(true);
@@ -298,7 +300,6 @@ export function SingleMarketDashboard({ profile = "football", marketLabel = "Mar
               }}
             />
             <OrderTicket profile={profile} marketId={market.id} conditionId={market.conditionId} tokenId={tokenId} outcomeName={outcome} />
-            <LatencyTestPanel profile={profile} marketId={market.id} tokenId={tokenId} outcomeName={outcome} />
             <button className="primary-button w-full" onClick={() => setSequenceBuilderOpen(true)}>
               <ArrowRight className="h-4 w-4" />
               Sequence

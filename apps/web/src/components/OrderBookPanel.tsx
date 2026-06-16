@@ -1,7 +1,6 @@
 "use client";
 
 import { Activity } from "lucide-react";
-import { useEffect, useState } from "react";
 import { useOrderBook } from "./OrderBookProvider";
 
 function fmt(value: number | null | undefined, digits = 3) {
@@ -20,27 +19,8 @@ function levelVolume(level: { price: number; size: number }) {
   return level.price * level.size;
 }
 
-function ageMs(lastUpdateTime: string | null | undefined, now: number) {
-  if (!lastUpdateTime) return null;
-  const parsed = Date.parse(lastUpdateTime);
-  return Number.isFinite(parsed) ? Math.max(0, now - parsed) : null;
-}
-
-function freshnessLabel(age: number | null) {
-  if (age === null) return { label: "No data", className: "border-slate-200 bg-slate-50 text-slate-500" };
-  if (age <= 300) return { label: `${age}ms fresh`, className: "border-emerald-200 bg-emerald-50 text-emerald-700" };
-  if (age <= 1000) return { label: `${age}ms ok`, className: "border-amber-200 bg-amber-50 text-amber-700" };
-  return { label: `${age}ms stale`, className: "border-rose-200 bg-rose-50 text-rose-700" };
-}
-
 export function OrderBookPanel({ tokenId }: { tokenId: string }) {
   const book = useOrderBook(tokenId);
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    const id = window.setInterval(() => setNow(Date.now()), 250);
-    return () => window.clearInterval(id);
-  }, []);
-  const freshness = freshnessLabel(ageMs(book?.lastUpdateTime, now));
   const signal30s = book?.ofi?.signal30s ?? "Neutral";
   const signal2m = book?.ofi?.signal2m ?? "Neutral";
   const bids = book?.bids ?? [];
@@ -55,10 +35,7 @@ export function OrderBookPanel({ tokenId }: { tokenId: string }) {
           <Activity className="h-4 w-4" />
           Order Book
         </div>
-        <div className="flex items-center gap-2">
-          <span className={`rounded border px-2 py-1 text-[11px] font-semibold ${freshness.className}`}>{freshness.label}</span>
-          <div className="font-mono text-xs text-slate-500">{book?.lastUpdateTime ?? "waiting"}</div>
-        </div>
+        <div className="font-mono text-xs text-slate-500">{book?.lastUpdateTime ?? "waiting"}</div>
       </div>
       <div className="grid grid-cols-4 gap-px border-b border-line bg-line text-center">
         {[
