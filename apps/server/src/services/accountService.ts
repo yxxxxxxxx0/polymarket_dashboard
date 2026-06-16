@@ -52,7 +52,7 @@ async function liveBalance() {
   try {
     const client = await getBalanceClobClient();
     const response = await withTimeout(
-      client.getBalanceAllowance({ asset_type: AssetType.COLLATERAL }) as Promise<BalanceAllowancePayload>,
+      () => client.getBalanceAllowance({ asset_type: AssetType.COLLATERAL }) as Promise<BalanceAllowancePayload>,
       config.POLYMARKET_FETCH_TIMEOUT_MS,
       "Polymarket balance"
     );
@@ -130,7 +130,7 @@ export async function accountSummary(options: { force?: boolean } = {}) {
   const inFlight = accountSummaryInFlight.get(profile);
   if (!options.force && inFlight) return inFlight;
 
-  const nextInFlight = withTimeout(buildAccountSummary(), config.POLYMARKET_FETCH_TIMEOUT_MS, "Polymarket account summary")
+  const nextInFlight = withTimeout(() => buildAccountSummary(), config.POLYMARKET_FETCH_TIMEOUT_MS, "Polymarket account summary")
     .then((summary) => {
       const value = { ...summary, ok: true, stale: false, cachedAt: summary.updatedAt };
       cachedAccountSummaries.set(profile, { value, expiresAt: Date.now() + ACCOUNT_SUMMARY_SUCCESS_CACHE_MS });

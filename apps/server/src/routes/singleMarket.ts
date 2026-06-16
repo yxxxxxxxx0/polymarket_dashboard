@@ -6,7 +6,7 @@ import { enterMarketProfile } from "../services/activeMarketService.js";
 import { getChart, type ChartInterval, type ChartSource } from "../services/chartService.js";
 import { fetchOrderBook } from "../services/clobService.js";
 import { fetchMarketMetadata } from "../services/marketMetadataService.js";
-import { getCachedOrderBook, onOrderBookUpdate, subscribeTokens } from "../services/orderbookCache.js";
+import { getCachedOrderBook, onOrderBookUpdate, orderBookAgeMs, subscribeTokens } from "../services/orderbookCache.js";
 import { configuredMarket, assertConfiguredToken } from "../services/singleMarketService.js";
 
 export const singleMarketRouter = Router();
@@ -40,7 +40,42 @@ singleMarketRouter.get("/chart", asyncHandler(async (req, res) => {
 singleMarketRouter.get("/orderbook/:tokenId", asyncHandler(async (req, res) => {
   selectRequestProfile(req);
   const tokenId = assertConfiguredToken(requireString(req.params.tokenId, "tokenId"));
-  res.json(await fetchOrderBook(tokenId));
+  const cached = getCachedOrderBook(tokenId);
+  const cachedAge = orderBookAgeMs(cached);
+  const maxAgeMs = req.query.fast === "1" ? config.ORDERBOOK_STALE_MS_FAST : config.ORDERBOOK_STALE_MS_NORMAL;
+  if (cachedAge !== null && cachedAge <= maxAgeMs) {
+    res.json({ ...cached, ok: true, stale: false, ageMs: cachedAge, orderbook: cached });
+    return;
+  }
+
+  try {
+    const fresh = await fetchOrderBook(tokenId, { force: true, maxAgeMs });
+    const ageMs = orderBookAgeMs(fresh);
+    const stale = ageMs === null || ageMs > maxAgeMs;
+    if (stale && fresh.lastUpdateTime) {
+      res.json({ ...fresh, ok: true, stale: true, ageMs, warning: "Upstream orderbook timed out; returned stale cached orderbook", orderbook: fresh });
+      return;
+    }
+    if (stale) {
+      res.status(504).json({ ok: false, stale: true, ageMs, error: "Orderbook unavailable" });
+      return;
+    }
+    res.json({ ...fresh, ok: true, stale: false, ageMs, orderbook: fresh });
+  } catch (error) {
+    const fallbackAge = orderBookAgeMs(cached);
+    if (cached.lastUpdateTime) {
+      res.json({
+        ...cached,
+        ok: true,
+        stale: true,
+        ageMs: fallbackAge,
+        warning: error instanceof Error ? error.message : "Upstream orderbook unavailable",
+        orderbook: cached
+      });
+      return;
+    }
+    res.status(504).json({ ok: false, stale: true, ageMs: fallbackAge, error: error instanceof Error ? error.message : "Orderbook unavailable" });
+  }
 }));
 
 streamRouter.get("/orderbook", (req, res) => {

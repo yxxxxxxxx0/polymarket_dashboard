@@ -319,8 +319,8 @@ assert.equal(normalSpreadAllowed(0.08, 0.06, true), true);
 assert.equal(orderBookIsStale(299, 300), false);
 assert.equal(orderBookIsStale(301, 300), true);
 assert.equal(orderBookIsStale(null, 300), true);
-assert.equal(staleLimitForMode("normal"), 500);
-assert.equal(staleLimitForMode("fast"), 300);
+assert.equal(staleLimitForMode("normal"), 1000);
+assert.equal(staleLimitForMode("fast"), 500);
 assert.equal(staleLimitForMode("emergency"), 250);
 assert.deepEqual(executionAnchorByAction, {
   STOP_LOSS_SELL: "bestBid",

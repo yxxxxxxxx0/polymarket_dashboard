@@ -11,6 +11,8 @@ import { prisma } from "../lib/prisma.js";
 import type { OrderBook } from "../types/domain.js";
 import { fetchOrderBook } from "./clobService.js";
 import { config } from "../config.js";
+import { createLimiter } from "../lib/concurrency.js";
+import { TimeoutError, withTimeout } from "../lib/timeout.js";
 import { getCachedOfi, getCachedOrderBook, onOrderBookUpdate, orderBookAgeMs } from "./orderbookCache.js";
 import { getAppSettings } from "./settingsService.js";
 import { assertConfiguredToken, marketScope, outcomeForToken } from "./singleMarketService.js";
@@ -43,8 +45,11 @@ const emergencyCooldowns = new Map<string, number>();
 const tokenEvaluationQueues = new Map<string, { running: boolean; pending: OrderBook | null }>();
 const tokenExecutionLocks = new Set<string>();
 const blockedLogCooldowns = new Map<string, number>();
-let stopLossEvaluating = false;
-let breakoutEvaluating = false;
+const activeEvaluations = new Map<string, { startedAt: number }>();
+const queuedRuleExecutions = new Set<string>();
+const ruleEvaluationLimiter = createLimiter(config.STOP_LOSS_RULE_CONCURRENCY);
+const ruleExecutionLimiter = createLimiter(config.ORDER_EXECUTION_CONCURRENCY);
+let monitorTicksInFlight = 0;
 let lastStopLossTickAt: string | null = null;
 let lastStopLossTickDurationMs: number | null = null;
 let lastBreakoutTickAt: string | null = null;
@@ -59,6 +64,18 @@ const EMERGENCY_COOLDOWN_MS = 5_000;
 const EMERGENCY_SPREAD_OVERRIDE_SCORE = 0.85;
 const BLOCKED_LOG_COOLDOWN_MS = 5_000;
 type EvaluationMode = "normal" | "fast" | "emergency";
+
+function evaluationKey(rule: Pick<StopLossRule, "marketId" | "tokenId" | "id">) {
+  return `${rule.marketId}:${rule.tokenId}:${rule.id}`;
+}
+
+function activeEvaluationSnapshot() {
+  const now = Date.now();
+  return [...activeEvaluations.entries()].map(([key, state]) => ({
+    key,
+    ageMs: now - state.startedAt
+  }));
+}
 
 export function getMarketableSellLimit(bestBid: number, slippage: number): number {
   return Math.max(0.01, bestBid - slippage);
@@ -485,7 +502,12 @@ async function freshestOrderBook(tokenId: string, preferred?: OrderBook, maxAgeM
   const cachedAge = orderBookAgeMs(cached);
   if (!forceRefresh && cachedAge !== null && cachedAge <= maxAgeMs) return cached;
 
-  return fetchOrderBook(tokenId, { force: true, maxAgeMs });
+  const fetched = await fetchOrderBook(tokenId, { force: true, maxAgeMs });
+  const fetchedAge = orderBookAgeMs(fetched);
+  if (fetchedAge === null || fetchedAge > maxAgeMs) {
+    throw new Error(`Orderbook unavailable or stale for ${tokenId} (${fetchedAge ?? "unknown"}ms old, limit ${maxAgeMs}ms)`);
+  }
+  return fetched;
 }
 
 function assertFreshEnoughForExecution(book: OrderBook, maxAgeMs: number) {
@@ -527,6 +549,102 @@ async function claimRuleExecution(rule: StopLossRule, triggeredPrice: number | n
   if (result.count !== 1) return null;
   invalidateStopLossRuleCache(rule.marketId);
   return prisma.stopLossRule.findUnique({ where: { id: rule.id } });
+}
+
+async function resetClaimedRuleForReevaluation(rule: StopLossRule, tradeMode: TradeMode, message: string, rawResponse?: unknown) {
+  const status = isBreakoutRule(rule.ruleType) ? StopLossStatus.ARMED : StopLossStatus.ACTIVE;
+  await prisma.stopLossTriggerLog.create({
+    data: {
+      ruleId: rule.id,
+      referencePrice: rule.triggeredPrice,
+      executablePrice: null,
+      size: null,
+      tradeMode,
+      success: false,
+      message,
+      rawResponse: rawResponse === undefined ? undefined : JSON.stringify(rawResponse)
+    }
+  });
+  const updated = await prisma.stopLossRule.update({
+    where: { id: rule.id },
+    data: {
+      status,
+      orderSubmitted: false,
+      orderId: null,
+      triggeredAt: null,
+      triggeredPrice: null
+    }
+  });
+  invalidateStopLossRuleCache(rule.marketId);
+  return updated;
+}
+
+function enqueueRuleExecution(rule: StopLossRule, task: () => Promise<unknown>) {
+  if (queuedRuleExecutions.has(rule.id)) {
+    return {
+      triggered: true,
+      queued: true,
+      deduped: true,
+      status: rule.status,
+      message: "Execution is already queued for this rule"
+    };
+  }
+
+  queuedRuleExecutions.add(rule.id);
+  void ruleExecutionLimiter(async () => {
+    const started = Date.now();
+    try {
+      await task();
+    } catch (error) {
+      console.error("[stop-loss] queued execution failed", { ruleId: rule.id, tokenId: rule.tokenId, error });
+      const message = error instanceof Error ? error.message : "Queued execution failed";
+      await markRuleTerminal(rule.id, StopLossStatus.FAILED, message).catch((terminalError) => {
+        console.error("[stop-loss] failed to mark queued execution terminal", { ruleId: rule.id, error: terminalError });
+      });
+    } finally {
+      const duration = Date.now() - started;
+      if (duration > config.MAX_RULE_EVAL_MS) {
+        console.warn("[stop-loss] queued execution exceeded watchdog", { ruleId: rule.id, tokenId: rule.tokenId, durationMs: duration });
+      }
+      queuedRuleExecutions.delete(rule.id);
+    }
+  });
+
+  return {
+    triggered: true,
+    queued: true,
+    status: StopLossStatus.TRIGGERING,
+    message: "Execution queued"
+  };
+}
+
+async function evaluateRuleWithLock<T>(rule: StopLossRule, task: () => Promise<T>): Promise<T | null> {
+  const key = evaluationKey(rule);
+  const now = Date.now();
+  const active = activeEvaluations.get(key);
+  if (active) {
+    const ageMs = now - active.startedAt;
+    if (ageMs < config.MAX_RULE_EVAL_MS) {
+      console.warn("[stop-loss] rule evaluation still running, skipping rule", { key, ageMs });
+      return null;
+    }
+    console.warn("[stop-loss] stale evaluation lock cleared", { key, ageMs });
+    activeEvaluations.delete(key);
+  }
+
+  activeEvaluations.set(key, { startedAt: now });
+  try {
+    return await withTimeout(() => task(), config.MAX_RULE_EVAL_MS, `stop-loss rule ${rule.id}`);
+  } catch (error) {
+    if (error instanceof TimeoutError) {
+      console.error("[stop-loss] rule evaluation timed out", { ruleId: rule.id, tokenId: rule.tokenId, timeoutMs: config.MAX_RULE_EVAL_MS });
+      return null;
+    }
+    throw error;
+  } finally {
+    const current = activeEvaluations.get(key);
+    if (current?.startedAt === now) activeEvaluations.delete(key);
+  }
 }
 
 export function invalidateStopLossRuleCache(marketId?: string) {
@@ -758,9 +876,19 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
       return { triggered: false, referencePrice: breakoutRef, spread, rollingOfi, priceSlope, spreadOk, ofiOk, slopeOk, status: liveRule.status, effectiveRisk: risk, emergencyMetrics: emergencyBreakoutMetrics };
     }
 
-    return withTokenExecutionLock(liveRule.tokenId, async () => {
+    const claimedRule = await claimRuleExecution(liveRule, breakoutRef);
+    if (!claimedRule) return null;
+
+    return enqueueRuleExecution(claimedRule, async () => {
+      const executed = await withTokenExecutionLock(claimedRule.tokenId, async () => {
       const executionStaleLimitMs = staleLimitForMode(emergencyBreakoutTriggered ? "emergency" : mode);
-      const executionBook = await freshestOrderBook(liveRule.tokenId, book, executionStaleLimitMs, emergencyBreakoutTriggered);
+      const executionBook = await freshestOrderBook(liveRule.tokenId, book, executionStaleLimitMs, emergencyBreakoutTriggered)
+        .catch((error) => resetClaimedRuleForReevaluation(
+          claimedRule,
+          tradeMode,
+          error instanceof Error ? error.message : "Orderbook unavailable during breakout execution"
+        ).then(() => null));
+      if (!executionBook) return null;
       assertFreshEnoughForExecution(executionBook, executionStaleLimitMs);
       const executionMovement = rememberMidpointMove(liveRule.tokenId, executionBook);
       const executionGameMinute = await currentGameMinute(liveRule.marketId);
@@ -793,7 +921,7 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
         const blockedReason = !stillTriggered
           ? "Fresh orderbook no longer satisfies breakout trigger"
           : `Spread ${executionSpread?.toFixed(3) ?? "unknown"} exceeds effective max spread ${executionRisk.maxSpread}`;
-        await logBlockedExecution(liveRule, executionLogPayload({
+        await logBlockedExecution(claimedRule, executionLogPayload({
           actionType: executionEmergencyBreakout ? "EMERGENCY_BREAKOUT" : "BREAKOUT_BUY",
           book: executionBook,
           limitPrice: executionBook.bestAsk === null ? null : getMarketableBuyLimit(executionBook.bestAsk, executionRisk.slippageLimit),
@@ -804,19 +932,16 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
           executionAnchor: executionAnchorByAction.BREAKOUT_BUY,
           blockedReason
         }), tradeMode, blockedReason);
-        return {
-          triggered: false,
-          referencePrice: executionRef,
-          spread: executionSpread,
-          status: liveRule.status,
-          effectiveRisk: executionRisk,
-          emergencyMetrics: executionEmergencyMetrics,
-          message: "Breakout skipped because the fresh orderbook no longer satisfies trigger conditions"
-        };
+        return resetClaimedRuleForReevaluation(claimedRule, tradeMode, "Breakout skipped because the fresh orderbook no longer satisfies trigger conditions", {
+          execution: {
+            referencePrice: executionRef,
+            spread: executionSpread,
+            effectiveRisk: executionRisk,
+            emergencyMetrics: executionEmergencyMetrics,
+            blockedReason
+          }
+        });
       }
-
-      const claimedRule = await claimRuleExecution(liveRule, executionRef);
-      if (!claimedRule) return null;
 
       const useEmergencyExecution = Boolean(executionEmergencyBreakout && executionGameMinute !== null && executionEmergencyMetrics);
       const price = useEmergencyExecution && executionBook.bestAsk !== null && executionGameMinute !== null
@@ -888,6 +1013,12 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
         await markRuleTerminal(claimedRule.id, StopLossStatus.FAILED, message);
         return prisma.stopLossRule.findUnique({ where: { id: claimedRule.id } });
       }
+      });
+
+      if (executed === null) {
+        return resetClaimedRuleForReevaluation(claimedRule, tradeMode, "Token execution lock busy; rule returned to active evaluation");
+      }
+      return executed;
     });
   }
 
@@ -985,9 +1116,19 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
     };
   }
 
-  return withTokenExecutionLock(liveRule.tokenId, async () => {
+  const claimedRule = await claimRuleExecution(liveRule, ref);
+  if (!claimedRule) return null;
+
+  return enqueueRuleExecution(claimedRule, async () => {
+    const executed = await withTokenExecutionLock(claimedRule.tokenId, async () => {
     const executionStaleLimitMs = staleLimitForMode(triggerReason === "EMERGENCY_STOP" ? "emergency" : mode);
-    const executionBook = await freshestOrderBook(liveRule.tokenId, book, executionStaleLimitMs, triggerReason === "EMERGENCY_STOP");
+    const executionBook = await freshestOrderBook(liveRule.tokenId, book, executionStaleLimitMs, triggerReason === "EMERGENCY_STOP")
+      .catch((error) => resetClaimedRuleForReevaluation(
+        claimedRule,
+        tradeMode,
+        error instanceof Error ? error.message : "Orderbook unavailable during stop-loss execution"
+      ).then(() => null));
+    if (!executionBook) return null;
     assertFreshEnoughForExecution(executionBook, executionStaleLimitMs);
     const executionRef = referencePrice(executionBook, liveRule.triggerType);
     const executionGameMinute = await currentGameMinute(liveRule.marketId);
@@ -1016,20 +1157,19 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
       : executionRisk.disableMaxSpread || executionRisk.maxSpread === null || executionRisk.maxSpread === undefined || (executionSpread !== null && executionSpread <= executionRisk.maxSpread);
 
     if (triggerReason === "EMERGENCY_STOP" && !executionEmergencyStop) {
-      return {
-        triggered: false,
-        referencePrice: executionRef,
-        spread: executionSpread,
-        status: liveRule.status,
-        effectiveRisk: executionRisk,
-        emergencyMetrics: executionEmergencyMetrics,
-        message: "Emergency stop skipped because the fresh orderbook no longer satisfies stress conditions"
-      };
+      return resetClaimedRuleForReevaluation(claimedRule, tradeMode, "Emergency stop skipped because the fresh orderbook no longer satisfies stress conditions", {
+        execution: {
+          referencePrice: executionRef,
+          spread: executionSpread,
+          effectiveRisk: executionRisk,
+          emergencyMetrics: executionEmergencyMetrics
+        }
+      });
     }
 
     if (!executionSpreadOk) {
       const blockedReason = `Spread ${executionSpread?.toFixed(3) ?? "unknown"} exceeds effective max spread ${executionRisk.maxSpread}`;
-      await logBlockedExecution(liveRule, executionLogPayload({
+      await logBlockedExecution(claimedRule, executionLogPayload({
         actionType: useEmergencyExecution ? "EMERGENCY_STOP" : triggerReason === "TAKE_PROFIT" ? "TAKE_PROFIT" : "STOP_LOSS",
         book: executionBook,
         limitPrice: executionBook.bestBid === null ? null : getMarketableSellLimit(executionBook.bestBid, executionRisk.slippageLimit),
@@ -1040,19 +1180,16 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
         executionAnchor: executionAnchorByAction.STOP_LOSS_SELL,
         blockedReason
       }), tradeMode, blockedReason);
-      return {
-        triggered: false,
-        referencePrice: executionRef,
-        spread: executionSpread,
-        status: liveRule.status,
-        effectiveRisk: executionRisk,
-        emergencyMetrics: executionEmergencyMetrics,
-        message: blockedReason
-      };
+      return resetClaimedRuleForReevaluation(claimedRule, tradeMode, blockedReason, {
+        execution: {
+          referencePrice: executionRef,
+          spread: executionSpread,
+          effectiveRisk: executionRisk,
+          emergencyMetrics: executionEmergencyMetrics,
+          blockedReason
+        }
+      });
     }
-
-    const claimedRule = await claimRuleExecution(liveRule, executionRef);
-    if (!claimedRule) return null;
 
     const position = claimedRule.positionId
     ? await prisma.position.findFirst({ where: { id: claimedRule.positionId, marketId } })
@@ -1158,13 +1295,19 @@ async function evaluateStopLossRuleRow(rule: StopLossRule, tradeMode: TradeMode 
         data: { status: StopLossStatus.FAILED }
       });
     }
+    });
+
+    if (executed === null) {
+      return resetClaimedRuleForReevaluation(claimedRule, tradeMode, "Token execution lock busy; rule returned to active evaluation");
+    }
+    return executed;
   });
 }
 
 export async function evaluateStopLossRule(ruleId: string, tradeMode: TradeMode = TradeMode.PAPER, bookOverride?: OrderBook) {
   const rule = await prisma.stopLossRule.findUnique({ where: { id: ruleId } });
   if (!rule) return null;
-  return evaluateStopLossRuleRow(rule, tradeMode, bookOverride, bookOverride ? "fast" : "normal");
+  return evaluateRuleWithLock(rule, () => evaluateStopLossRuleRow(rule, tradeMode, bookOverride, bookOverride ? "fast" : "normal"));
 }
 
 export async function evaluateAllStopLossRules() {
@@ -1172,38 +1315,37 @@ export async function evaluateAllStopLossRules() {
   const tradeMode = await currentTradeMode();
   const enabledRules = await getEnabledStopRules(marketId);
 
-  const results = [];
-  for (const rule of enabledRules) {
+  return Promise.all(enabledRules.map((rule) => ruleEvaluationLimiter(async () => {
     try {
-      results.push(await evaluateStopLossRuleRow(rule, tradeMode, undefined, "normal"));
+      return await evaluateRuleWithLock(rule, () => evaluateStopLossRuleRow(rule, tradeMode, undefined, "normal"));
     } catch (error) {
       console.error("[stop-loss] rule evaluation failed", { ruleId: rule.id, tokenId: rule.tokenId, error });
-      results.push(null);
+      return null;
     }
-  }
-  return results;
+  })));
 }
 
 export async function evaluateStopRulesForMarket(marketId: string, book?: OrderBook) {
   const tradeMode = await currentTradeMode();
   const enabledRules = await getEnabledStopRules(marketId, book?.tokenId);
 
-  const results = [];
-  for (const rule of enabledRules) {
+  return Promise.all(enabledRules.map((rule) => ruleEvaluationLimiter(async () => {
     try {
-      results.push(await evaluateStopLossRuleRow(rule, tradeMode, book, book ? "fast" : "normal"));
+      return await evaluateRuleWithLock(rule, () => evaluateStopLossRuleRow(rule, tradeMode, book, book ? "fast" : "normal"));
     } catch (error) {
       console.error("[stop-loss] event rule evaluation failed", { ruleId: rule.id, tokenId: rule.tokenId, error });
-      results.push(null);
+      return null;
     }
-  }
-  return results;
+  })));
 }
 
 export function evaluatorDiagnostics() {
   return {
-    stopLossEvaluating,
-    breakoutEvaluating,
+    stopLossEvaluating: activeEvaluations.size > 0,
+    breakoutEvaluating: activeEvaluations.size > 0,
+    monitorTicksInFlight,
+    activeRuleEvaluations: activeEvaluationSnapshot(),
+    queuedRuleExecutions: [...queuedRuleExecutions],
     lastStopLossTickAt,
     lastStopLossTickDurationMs,
     lastBreakoutTickAt,
@@ -1401,7 +1543,7 @@ async function retryTimedOutEmergencyOrders() {
     });
     invalidateStopLossRuleCache(rule.marketId);
     const freshBook = await freshestOrderBook(rule.tokenId, undefined, staleLimitForMode("emergency"), true);
-    results.push(await evaluateStopLossRuleRow(resetRule, tradeMode, freshBook, "emergency"));
+    results.push(await evaluateRuleWithLock(resetRule, () => evaluateStopLossRuleRow(resetRule, tradeMode, freshBook, "emergency")));
   }
   return results;
 }
@@ -1414,18 +1556,17 @@ export function startStopLossMonitor() {
     });
   }
   setInterval(() => {
-    if (stopLossEvaluating || breakoutEvaluating) {
-      console.warn("[stop-loss] previous evaluation still running, skipping tick");
-      return;
-    }
     const started = Date.now();
-    stopLossEvaluating = true;
-    breakoutEvaluating = true;
+    monitorTicksInFlight += 1;
     lastStopLossTickAt = new Date(started).toISOString();
     lastBreakoutTickAt = lastStopLossTickAt;
-    evaluateAllStopLossRules()
-      .then(() => retryTimedOutEmergencyOrders())
-      .then(() => reconcileStrategySequences())
+    withTimeout(
+      () => evaluateAllStopLossRules()
+        .then(() => retryTimedOutEmergencyOrders())
+        .then(() => reconcileStrategySequences()),
+      config.MAX_FULL_TICK_MS,
+      "stop-loss full tick"
+    )
       .catch((error) => {
         console.error("[stop-loss] evaluation failed", error);
       })
@@ -1433,8 +1574,7 @@ export function startStopLossMonitor() {
         const duration = Date.now() - started;
         lastStopLossTickDurationMs = duration;
         lastBreakoutTickDurationMs = duration;
-        stopLossEvaluating = false;
-        breakoutEvaluating = false;
+        monitorTicksInFlight = Math.max(0, monitorTicksInFlight - 1);
       });
   }, config.STOP_LOSS_POLL_MS);
 }

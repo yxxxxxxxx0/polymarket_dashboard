@@ -1,7 +1,15 @@
 import { HttpError } from "./http.js";
 
+export class TimeoutError extends HttpError {
+  readonly isTimeout = true;
+
+  constructor(public label: string, public timeoutMs: number) {
+    super(504, `${label} timed out after ${timeoutMs}ms`);
+  }
+}
+
 function timeoutError(label: string, timeoutMs: number) {
-  return new HttpError(504, `${label} timed out after ${timeoutMs}ms`);
+  return new TimeoutError(label, timeoutMs);
 }
 
 export async function fetchWithTimeout(
@@ -9,34 +17,38 @@ export async function fetchWithTimeout(
   options: RequestInit = {},
   timeoutMs = 5_000
 ): Promise<Response> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    return await fetch(url, {
-      ...options,
-      signal: controller.signal
-    });
-  } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") {
-      throw timeoutError(url, timeoutMs);
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
-  }
+  return withTimeout((signal) => fetch(url, { ...options, signal }), timeoutMs, url);
 }
 
-export async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+export async function withTimeout<T>(
+  promiseFactory: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  label: string
+): Promise<T> {
+  const controller = new AbortController();
   let timeout: NodeJS.Timeout | null = null;
+  const operation = Promise.resolve()
+    .then(() => promiseFactory(controller.signal))
+    .catch((error) => {
+      if (controller.signal.aborted && error instanceof DOMException && error.name === "AbortError") {
+        throw timeoutError(label, timeoutMs);
+      }
+      throw error;
+    });
+
   try {
     return await Promise.race([
-      promise,
+      operation,
       new Promise<T>((_resolve, reject) => {
-        timeout = setTimeout(() => reject(timeoutError(label, timeoutMs)), timeoutMs);
+        timeout = setTimeout(() => {
+          console.warn(`[timeout] ${label} exceeded ${timeoutMs}ms`);
+          controller.abort();
+          reject(timeoutError(label, timeoutMs));
+        }, timeoutMs);
       })
     ]);
   } finally {
     if (timeout) clearTimeout(timeout);
+    operation.catch(() => undefined);
   }
 }

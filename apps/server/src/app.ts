@@ -45,6 +45,7 @@ app.use((req, res, next) => {
   const originalSend = res.send.bind(res);
   res.json = ((body: unknown) => timedOut && res.headersSent ? res : originalJson(body)) as typeof res.json;
   res.send = ((body?: unknown) => timedOut && res.headersSent ? res : originalSend(body)) as typeof res.send;
+  req.setTimeout(config.API_ROUTE_TIMEOUT_MS);
   res.setTimeout(config.API_ROUTE_TIMEOUT_MS, () => {
     timedOut = true;
     if (!res.headersSent) {
