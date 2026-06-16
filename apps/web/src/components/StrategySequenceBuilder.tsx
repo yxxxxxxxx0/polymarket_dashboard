@@ -50,9 +50,9 @@ export function StrategySequenceBuilder({ profile, marketId, conditionId, tokenI
   const [maxSpread, setMaxSpread] = useState("0.03");
   const [disableBreakoutMaxSpread, setDisableBreakoutMaxSpread] = useState(false);
   const [aggressiveBreakout, setAggressiveBreakout] = useState(true);
-  const [activationCondition, setActivationCondition] = useState<"FULL_FILL_ONLY" | "PARTIAL_FILL_ALLOWED" | "MIN_FILLED_SHARES">("FULL_FILL_ONLY");
+  const [activationCondition, setActivationCondition] = useState<"FULL_FILL_ONLY" | "PARTIAL_FILL_ALLOWED" | "MIN_FILLED_SHARES">("PARTIAL_FILL_ALLOWED");
   const [minFilledShares, setMinFilledShares] = useState("1");
-  const [cancelAfterSeconds, setCancelAfterSeconds] = useState("10");
+  const [cancelAfterSeconds, setCancelAfterSeconds] = useState("3");
   const [stopEnabled, setStopEnabled] = useState(true);
   const [stopMode, setStopMode] = useState<"percent" | "price">("percent");
   const [stopPercentage, setStopPercentage] = useState("8");

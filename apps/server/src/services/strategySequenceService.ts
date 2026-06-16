@@ -19,7 +19,7 @@ const FULL_FILL_EPSILON = 1e-6;
 const FULL_FILL_ONLY = "FULL_FILL_ONLY";
 const PARTIAL_FILL_ALLOWED = "PARTIAL_FILL_ALLOWED";
 const MIN_FILLED_SHARES = "MIN_FILLED_SHARES";
-const PARENT_FULL_FILL = FULL_FILL_ONLY;
+const DEFAULT_CHILD_ACTIVATION = PARTIAL_FILL_ALLOWED;
 
 type ActivationCondition = typeof FULL_FILL_ONLY | typeof PARTIAL_FILL_ALLOWED | typeof MIN_FILLED_SHARES;
 
@@ -111,7 +111,7 @@ export function isFullFill(fill: FillActivationInput) {
 }
 
 export function shouldActivateChildren(rule: Pick<StopLossRule, "activationCondition" | "minFilledShares">, fill: FillActivationInput) {
-  const condition = rule.activationCondition ?? FULL_FILL_ONLY;
+  const condition = rule.activationCondition ?? DEFAULT_CHILD_ACTIVATION;
   if (condition === PARTIAL_FILL_ALLOWED) return fill.filledShareAmount > 0;
   if (condition === MIN_FILLED_SHARES) return fill.filledShareAmount + FULL_FILL_EPSILON >= (rule.minFilledShares ?? 0);
   return isFullFill(fill);
@@ -191,7 +191,7 @@ export async function createStrategySequence(config: StrategySequenceConfig) {
   const slippageLimit = config.breakout.slippageLimit ?? 0.01;
 
   const result = await prisma.$transaction(async (tx) => {
-    const activationCondition = config.breakout.activationCondition ?? FULL_FILL_ONLY;
+    const activationCondition = config.breakout.activationCondition ?? DEFAULT_CHILD_ACTIVATION;
     const sequence = await tx.strategySequence.create({
       data: { marketId, conditionId, tokenId: config.breakout.tokenId, outcomeName, status: StopLossStatus.ACTIVE, activationCondition }
     });

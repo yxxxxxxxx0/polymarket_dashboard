@@ -16,6 +16,7 @@ import { tradingRouter } from "./routes/trading.js";
 import { withMarketProfile } from "./services/activeMarketService.js";
 import { accountCacheStatus } from "./services/accountService.js";
 import { orderBookCacheStatus } from "./services/orderbookCache.js";
+import { clobCircuitBreakerStatus } from "./services/clobService.js";
 import { evaluatorDiagnostics } from "./services/stopLossService.js";
 
 export const app = express();
@@ -79,7 +80,8 @@ function healthPayload() {
     memoryUsage: process.memoryUsage(),
     evaluator: evaluatorDiagnostics(),
     accountCache: accountCacheStatus(),
-    orderbookCache: orderBookCacheStatus()
+    orderbookCache: orderBookCacheStatus(),
+    clobCircuitBreaker: clobCircuitBreakerStatus()
   };
 }
 

@@ -5,10 +5,11 @@ import { z } from "zod";
 import { asyncHandler, requireString } from "../lib/http.js";
 import { prisma } from "../lib/prisma.js";
 import { enterMarketProfile } from "../services/activeMarketService.js";
-import { getLiveTrades } from "../services/clobService.js";
+import { getLiveTrades, runLiveBuyLatencyTest } from "../services/clobService.js";
 import { accountSummary } from "../services/accountService.js";
 import { cancelMarketOrders, cancelOrder, listOpenOrders, listPositions, placeOrder } from "../services/tradingService.js";
 import { assertConfiguredMarket, assertConfiguredToken, marketScope, outcomeForToken } from "../services/singleMarketService.js";
+import { assertTradingAllowed } from "../services/tradingPolicy.js";
 
 export const tradingRouter = Router();
 
@@ -20,6 +21,15 @@ const orderSchema = z.object({
   price: z.coerce.number().positive(),
   size: z.coerce.number().positive(),
   tradeMode: z.nativeEnum(TradeMode).default(TradeMode.PAPER)
+});
+
+const latencyTestSchema = z.object({
+  marketId: z.string().optional(),
+  tokenId: z.string().min(1),
+  usdAmount: z.coerce.number().positive().max(5).default(1),
+  slippageCents: z.coerce.number().positive().max(20).default(2),
+  confirmSpendOneDollar: z.literal(true),
+  tradeMode: z.literal(TradeMode.LIVE)
 });
 
 function selectRequestProfile(req: Request) {
@@ -50,6 +60,30 @@ tradingRouter.post("/orders/buy", asyncHandler(async (req, res) => {
   assertConfiguredMarket(body.marketId || marketId);
   assertConfiguredToken(body.tokenId);
   res.json(await placeOrder({ ...body, marketId, conditionId, outcomeName: body.outcomeName ?? outcomeForToken(body.tokenId), side: OrderSide.BUY }));
+}));
+
+tradingRouter.post("/orders/latency-test/buy", asyncHandler(async (req, res) => {
+  selectRequestProfile(req);
+  const body = latencyTestSchema.parse(req.body);
+  const { marketId } = marketScope();
+  assertConfiguredMarket(body.marketId || marketId);
+  assertConfiguredToken(body.tokenId);
+
+  // This endpoint intentionally places a real $1-ish live marketable buy.
+  // Keep the explicit confirmation and LIVE-only schema so it cannot be hit accidentally from paper mode.
+  await assertTradingAllowed({
+    tradeMode: TradeMode.LIVE,
+    action: "OPEN",
+    size: body.usdAmount,
+    price: 1
+  });
+
+  res.json(await runLiveBuyLatencyTest({
+    marketId,
+    tokenId: body.tokenId,
+    usdAmount: body.usdAmount,
+    slippageCents: body.slippageCents
+  }));
 }));
 
 tradingRouter.post("/orders/sell", asyncHandler(async (req, res) => {

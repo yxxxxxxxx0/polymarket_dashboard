@@ -55,13 +55,13 @@ const envSchema = z.object({
   MAX_RULE_EVAL_MS: z.coerce.number().int().min(500).default(2_500),
   MAX_FULL_TICK_MS: z.coerce.number().int().min(1_000).default(3_000),
   STOP_LOSS_RULE_CONCURRENCY: z.coerce.number().int().min(1).default(4),
-  ORDERBOOK_FETCH_CONCURRENCY: z.coerce.number().int().min(1).default(3),
+  ORDERBOOK_FETCH_CONCURRENCY: z.coerce.number().int().min(1).default(2),
   ORDER_EXECUTION_CONCURRENCY: z.coerce.number().int().min(1).default(1),
   POLYMARKET_FETCH_TIMEOUT_MS: z.coerce.number().int().min(500).default(1_500),
-  POLYMARKET_ORDERBOOK_TIMEOUT_MS: z.coerce.number().int().min(500).default(1_000),
-  POLYMARKET_ORDER_SUBMIT_TIMEOUT_MS: z.coerce.number().int().min(500).default(2_000),
+  POLYMARKET_ORDERBOOK_TIMEOUT_MS: z.coerce.number().int().min(500).default(700),
+  POLYMARKET_ORDER_SUBMIT_TIMEOUT_MS: z.coerce.number().int().min(500).default(1_500),
   API_ROUTE_TIMEOUT_MS: z.coerce.number().int().min(1_000).default(5_000),
-  EMERGENCY_ORDER_TIMEOUT_MS: z.coerce.number().int().min(500).default(3_000),
+  EMERGENCY_ORDER_TIMEOUT_MS: z.coerce.number().int().min(500).default(1_500),
   EMERGENCY_MAX_RETRIES: z.coerce.number().int().min(0).default(2),
   ALLOW_EMERGENCY_SPREAD_OVERRIDE: z
     .string()
@@ -72,6 +72,8 @@ const envSchema = z.object({
   WEB_ORIGIN: z.string().default("http://localhost:3000"),
   APP_TIMEZONE: z.string().default("Asia/Hong_Kong"),
   GEO_COUNTRY_OVERRIDE: z.string().optional(),
+  CLOB_CIRCUIT_BREAKER_FAILURES: z.coerce.number().int().min(1).default(3),
+  CLOB_CIRCUIT_BREAKER_COOLDOWN_MS: z.coerce.number().int().min(500).default(3_000),
   GEO_REGION_OVERRIDE: z.string().optional()
 });
 
